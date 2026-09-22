@@ -1,0 +1,3 @@
+# Keep the upstream snapshot intact and focus reviews on Relay's documented patch.
+vendor/gpui-pre/** linguist-vendored -whitespace
+vendor/gpui-pre-inspector.patch -whitespace

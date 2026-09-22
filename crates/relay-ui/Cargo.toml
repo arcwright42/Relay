@@ -1,0 +1,20 @@
+[package]
+name = "relay-ui"
+description = "Relay workspace views built with GPUI Kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+devtools = ["gpui-kit/inspector"]
+
+[dependencies]
+gpui-kit.workspace = true
+relay-core.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
