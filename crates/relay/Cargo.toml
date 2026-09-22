@@ -1,0 +1,18 @@
+[package]
+name = "relay"
+description = "Relay macOS application entry point"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+default = ["devtools"]
+devtools = ["gpui-kit/inspector", "relay-ui/devtools"]
+
+[dependencies]
+gpui-kit.workspace = true
+relay-ui.workspace = true
+
+[lints]
+workspace = true

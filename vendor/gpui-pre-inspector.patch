@@ -1,0 +1,18 @@
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -5757,9 +5757,13 @@
+         }
+ 
+         #[cfg(any(feature = "inspector", debug_assertions))]
+-        if self.is_inspector_picking(cx) {
++        if self.is_inspector_picking(cx)
++            && self.mouse_position().x
++                < self.viewport_size.width - rems(30.0).to_pixels(self.rem_size())
++        {
+             self.handle_inspector_mouse_event(event, cx);
+-            // When inspector is picking, all other mouse handling is skipped.
++            // Relay patch: intercept application content only. Inspector controls must
++            // still receive input while picking. Match the 30rem pane in draw_roots.
+             return;
+         }
+ 
