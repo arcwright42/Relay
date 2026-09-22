@@ -8,6 +8,7 @@
 - UI 采用 GPUI + GPUI Kit 的 Rust 组件层。
 - Relay 作为 Agent Client Protocol（ACP）客户端连接 Agent。
 - 项目拥有长期上下文；Agent 连接及执行会话可以更换。
+- 首页 prompt 先通过独立 RoutingService 调用 Jev 判断项目归属，再进入项目执行；明确选择的项目不重新分配。
 - 主 Agent 做任务规划、选择执行 Agent、审阅和整合。
 - Relay 提供项目数据、调度工具、执行管理与桌面交互。
 
@@ -55,6 +56,8 @@
 当前对话按项目使用有格式版本的 JSON 文件，以临时文件、sync 和 rename 替换保存；流式回复定期检查点，退出时刷新。无法读取的文件保留原样，阻止覆盖。完整项目资料库实现时再引入数据库和附件索引。Rust 核心与 UI 渲染解耦；系统能力未来通过 Rust 平台模块封装。
 
 界面语言属于应用级偏好，通过独立 `SettingsService` 接口由 runtime 持久化到 `settings.json`。默认简体中文，可在设置中即时切换 English；UI 文案表和组件 locale 负责显示，项目内容、Agent 连接及协议值不随语言变化。
+
+`RoutingService` 与 `AgentService` 并列：runtime 的 Jev HTTP 客户端返回已有项目、新项目或用户选择；UI 接收结果后校验项目版本，使用 `CreateAtRevision` 保存新项目，再触发既有 Agent 连接和发送链路。Jev 不经过 ACP、不管理会话、不调度执行工具。API key 通过 macOS Keychain 独立管理。详见 [Jev 项目归属方案](PROJECT-ROUTING.md)。
 
 ## 3. ACP 接入
 

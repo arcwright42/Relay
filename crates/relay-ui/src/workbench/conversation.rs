@@ -11,6 +11,24 @@ impl Workbench {
         );
         column()
             .w_full()
+            .when(self.routing.pending_send.is_some(), |view| {
+                view.child(
+                    row()
+                        .justify_between()
+                        .mb(px(8.))
+                        .child(muted(self.text(Text::RoutingWaiting)).text_size(px(12.)))
+                        .child(
+                            Button::new("cancel-routed-send")
+                                .ghost()
+                                .small()
+                                .label(self.text(Text::Cancel))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.routing.pending_send = None;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .p(px(13.))
             .rounded(px(18.))
             .border_1()

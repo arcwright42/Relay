@@ -22,6 +22,7 @@ impl Workbench {
                         .text_size(px(18.))
                         .mb(px(22.)),
                 )
+                .child(self.routing_composer(cx))
                 .when_some(self.project_error.as_ref(), |view, error| {
                     view.child(div().text_color(rgb(0x9a542a)).child(error.clone()))
                 })
@@ -171,6 +172,7 @@ impl Workbench {
                     self.text(Text::Light),
                     self.text(Text::AppearanceDetail),
                 ))
+                .child(self.routing_settings(cx))
                 .child(Self::setting_row(
                     self.text(Text::Workspace),
                     self.text(Text::Local),

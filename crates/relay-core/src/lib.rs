@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod projects;
+pub mod routing;
 pub mod settings;
 
 pub use projects::{ContextId, ContextItem, Project};

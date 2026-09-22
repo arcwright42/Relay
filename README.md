@@ -22,6 +22,7 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 
 - 左侧导航与项目切换，中间工作区；按当前设计暂不显示右侧任务栏。
 - 多行输入、项目独立草稿、快捷动作、`⌘K` 项目搜索。
+- 首页输入通过 Jev 判断复用已有项目或新建项目，再交给 Codex；判断不明确或接口不可用时手动选择。项目内追问保持当前归属。
 - **设置 → 语言** 支持简体中文 / English，首次默认中文，切换立即生效并在重启后保留；不影响草稿和 Agent 对话。
 - 内置 Codex 入口，首次使用按需安装固定版本；也可选择已有 Codex 可执行文件。
 - 输入框中的 **Harness + Model** 菜单，模型与其他选项来自 ACP 实际返回。
@@ -36,6 +37,8 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 输入草稿只保留在当前进程中。文字资料可直接粘贴保存；文件/网页/图片导入、主 Agent 委派、系统划词、语音和视觉尚未实现。首次升级保留旧项目及已有对话，不迁入示例资料。
 
 点击左侧 **项目 +** 创建项目，标题右上方齿轮编辑项目指令；输入框 **添加上下文** 管理文字资料。只有选用的资料会随下一条消息发送，修改不会影响正在执行的轮次。每份资料最多 12,000 字，选用上下文合计最多 32,000 字，超限时明确提示。
+
+**设置 → Jev** 支持 Vercel AI Gateway 和 TypeSafe 两个渠道。保存对应 API key 后，可在首页直接输入需求，由 Jev 分配项目；使用 Vercel 无需另有 TypeSafe 密钥。密钥保存在 macOS 钥匙串中；请求包含本次输入、项目名称/说明片段和少量近期用户提问。缺少密钥或免费额度不可用时仍能手动选择项目。试用条件与接口详见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
 
 打开项目输入框的 **Codex** 菜单，选择 **安装并连接 Codex / 连接 Codex**（英文界面为 **Set up Codex / Connect Codex**）。已有 Codex 登录通常可直接复用；否则按返回的登录方式完成认证。连接后选择模型并发送消息。**智能体 / Agents** 页面管理安装来源与项目工作目录。详见 [Codex 接入](docs/CODEX.md)。
 
@@ -64,6 +67,7 @@ open dist/Relay.app
 | [包治理](docs/PACKAGES.md) | Cargo workspace 分层、依赖约束、自动检查和本地打包 |
 | [Codex 接入](docs/CODEX.md) | 托管组件、登录、Harness + Model、持久化与验证 |
 | [上下文与缓存落地方案](docs/CONTEXT-CACHING.md) | 项目版本、会话快照、增量同步、异常恢复与用量口径 |
+| [Jev 项目归属方案](docs/PROJECT-ROUTING.md) | API、候选项目、判断门槛、自动新建/复用、异常回退与密钥管理 |
 
 设计参考：[Claude Projects redesigned](https://claude.com/blog/projects-redesigned)。Relay 借鉴其项目主对话、执行线程、共享记忆与资料库的组织方式，并连接用户的本地 Agent。
 

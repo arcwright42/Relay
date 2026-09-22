@@ -68,6 +68,8 @@ fn validate_package(package: &Value) -> Result<()> {
             "serde",
             "serde_json",
             "sha2",
+            "ureq",
+            "security-framework",
         ],
         "relay-acp" => &[
             "agent-client-protocol",

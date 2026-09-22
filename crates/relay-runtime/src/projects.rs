@@ -252,6 +252,19 @@ impl ProjectStore {
 
     fn transaction(&self, command: ProjectCommand) -> Result<ProjectId> {
         let _writer = self.writer.lock().expect("project writer lock");
+        let command = match command {
+            ProjectCommand::CreateAtRevision {
+                expected_catalog_revision,
+                draft,
+            } => {
+                ensure!(
+                    self.revision() == expected_catalog_revision,
+                    "The project list changed. Review the destination and try again."
+                );
+                ProjectCommand::Create(draft)
+            }
+            command => command,
+        };
         let mut saved = self
             .state
             .lock()
@@ -290,7 +303,9 @@ impl ProjectStore {
                     expected_revision,
                     ..
                 } => (*project, *expected_revision),
-                ProjectCommand::Create(_) => unreachable!(),
+                ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
+                    unreachable!()
+                }
             };
             let project = saved
                 .projects
@@ -343,7 +358,9 @@ impl ProjectStore {
                         bail!("Unknown note");
                     }
                 }
-                ProjectCommand::Create(_) => unreachable!(),
+                ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
+                    unreachable!()
+                }
             }
             project.revision = project
                 .revision

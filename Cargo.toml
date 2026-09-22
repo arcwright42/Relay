@@ -24,6 +24,8 @@ relay-ui = { path = "crates/relay-ui", version = "=0.1.0" }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.11.0"
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "json"] }
+security-framework = "=3.7.0"
 
 # Keep Inspector controls clickable while selecting an element; see vendor/README.md.
 [patch.crates-io]

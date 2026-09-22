@@ -45,6 +45,10 @@ pub struct ProjectDraft {
 #[derive(Clone, Debug)]
 pub enum ProjectCommand {
     Create(ProjectDraft),
+    CreateAtRevision {
+        expected_catalog_revision: u64,
+        draft: ProjectDraft,
+    },
     Edit {
         project: ProjectId,
         expected_revision: u64,

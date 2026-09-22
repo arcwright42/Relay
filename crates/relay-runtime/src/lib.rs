@@ -5,10 +5,12 @@ mod delivery_tests;
 mod installer;
 mod metrics;
 mod projects;
+mod routing;
 mod settings;
 mod store;
 
 pub use projects::ProjectStore;
+pub use routing::JevRouter;
 pub use settings::SettingsStore;
 
 use installer::{Installer, RELEASE};

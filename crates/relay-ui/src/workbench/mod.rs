@@ -4,6 +4,7 @@ mod diagnostics;
 mod navigation;
 mod pages;
 mod projects;
+mod routing;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,7 @@ use relay_core::{
     Project,
     agents::*,
     projects::{ProjectCommand, ProjectService},
+    routing::RoutingService,
     settings::{Language, SettingsService, SettingsSnapshot},
 };
 use std::{sync::Arc, time::Duration};
@@ -90,6 +92,8 @@ pub struct Workbench {
     project_saving: bool,
     settings_service: Arc<dyn SettingsService>,
     settings_snapshot: SettingsSnapshot,
+    routing_service: Arc<dyn RoutingService>,
+    routing: routing::RoutingUi,
     page: Page,
     selected_project: usize,
     projects: Vec<Project>,
@@ -111,11 +115,14 @@ impl Workbench {
         agent_service: Arc<dyn AgentService>,
         settings_service: Arc<dyn SettingsService>,
         project_service: Arc<dyn ProjectService>,
+        routing_service: Arc<dyn RoutingService>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let settings_snapshot = settings_service.snapshot();
         let language = settings_snapshot.language;
+        let routing =
+            routing::RoutingUi::new(language, routing_service.snapshot().provider, window, cx);
         let catalog = project_service.snapshot();
         let projects = catalog.projects;
         let drafts: Vec<_> = projects
@@ -139,6 +146,19 @@ impl Workbench {
         for draft in &drafts {
             subscriptions.push(cx.subscribe_in(draft, window, |_, _, _, _, cx| cx.notify()));
         }
+        subscriptions.push(
+            cx.subscribe_in(&routing.draft, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) && !this.routing.creating {
+                    this.routing.reset_decision();
+                }
+                cx.notify();
+            }),
+        );
+        subscriptions.push(
+            cx.subscribe_in(&routing.key, window, |_, _, _: &InputEvent, _, cx| {
+                cx.notify()
+            }),
+        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let agent_states = projects
@@ -154,6 +174,7 @@ impl Workbench {
                     .update_in(cx, |this, window, cx| {
                         this.refresh_projects(window, cx);
                         this.refresh_agents(cx);
+                        this.advance_routed_send(window, cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
                             this.settings_snapshot = settings;
@@ -173,11 +194,9 @@ impl Workbench {
             project_saving: false,
             settings_service,
             settings_snapshot,
-            page: if projects.is_empty() {
-                Page::Home
-            } else {
-                Page::Project(0)
-            },
+            routing_service,
+            routing,
+            page: Page::Home,
             selected_project: 0,
             agent_errors: vec![None; projects.len()],
             projects,
@@ -211,11 +230,19 @@ impl Workbench {
                 draft.set_placeholder(language.text(Text::AskRelay), window, cx)
             });
         }
+        self.routing.draft.update(cx, |draft, cx| {
+            draft.set_placeholder(language.text(Text::AskRelay), window, cx)
+        });
         cx.notify();
     }
 
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = false;
+        self.routing.pending_send = None;
+        if self.page == Page::Home && page != Page::Home {
+            // Returning Home must not reactivate a decision from before navigation.
+            self.routing.navigation_revision += 1;
+        }
         if let Page::Project(index) = page {
             self.selected_project = index;
         }
@@ -236,6 +263,10 @@ impl Workbench {
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
         if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
+            return;
+        }
+        if self.page == Page::Home {
+            self.route_prompt(window, cx);
             return;
         }
         if !matches!(self.page, Page::Project(_))

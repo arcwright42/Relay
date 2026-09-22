@@ -1,6 +1,6 @@
 use super::{Page, Text, Translate, Workbench};
 use gpui_kit::{AppContext, Entity, TestAppContext};
-use relay_core::{ProjectId, agents::*, projects::*, settings::*};
+use relay_core::{ProjectId, agents::*, projects::*, routing::*, settings::*};
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -32,6 +32,23 @@ impl AgentService for TestAgents {
 
 #[derive(Default)]
 struct TestSettings(Mutex<SettingsSnapshot>);
+
+#[derive(Default)]
+struct TestRouting;
+impl RoutingService for TestRouting {
+    fn snapshot(&self) -> RoutingSnapshot {
+        RoutingSnapshot::default()
+    }
+    fn save_key(&self, _: RoutingProvider, _: String) -> Result<(), RoutingError> {
+        Ok(())
+    }
+    fn remove_key(&self) -> Result<(), RoutingError> {
+        Ok(())
+    }
+    fn decide(&self, _: &str) -> Result<RouteDecision, RoutingError> {
+        Err(RoutingError::NotConfigured)
+    }
+}
 impl SettingsService for TestSettings {
     fn snapshot(&self) -> SettingsSnapshot {
         self.0.lock().unwrap().clone()
@@ -51,6 +68,7 @@ fn switching_language_preserves_project_drafts_and_running_conversation(cx: &mut
             agents.clone(),
             settings.clone(),
             Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
             window,
             cx,
         )
@@ -134,8 +152,16 @@ impl ProjectService for TestProjects {
     }
     fn apply(&self, command: ProjectCommand) -> Result<ProjectId, String> {
         let mut state = self.0.lock().unwrap();
+        if let ProjectCommand::CreateAtRevision {
+            expected_catalog_revision,
+            ..
+        } = &command
+            && *expected_catalog_revision != state.revision
+        {
+            return Err("Catalog changed".into());
+        }
         let id = match command {
-            ProjectCommand::Create(draft) => {
+            ProjectCommand::Create(draft) | ProjectCommand::CreateAtRevision { draft, .. } => {
                 let id = ProjectId(state.projects.len() as u64 + 1);
                 state.projects.push(Project {
                     id,
@@ -174,6 +200,336 @@ impl ProjectService for TestProjects {
     }
 }
 
+#[derive(Default)]
+struct ReadyAgents(Mutex<Vec<(ProjectId, AgentCommand)>>);
+impl AgentService for ReadyAgents {
+    fn revision(&self) -> u64 {
+        1
+    }
+    fn snapshot(&self, _: ProjectId) -> AgentSnapshot {
+        AgentSnapshot {
+            status: ConnectionStatus::Ready,
+            ..Default::default()
+        }
+    }
+    fn dispatch(&self, id: ProjectId, command: AgentCommand) -> Result<(), String> {
+        self.0.lock().unwrap().push((id, command));
+        Ok(())
+    }
+}
+
+struct DecidingRouter {
+    decision: Result<RouteDecision, RoutingError>,
+    calls: Mutex<Vec<String>>,
+    key: Mutex<Option<(RoutingProvider, String)>>,
+}
+impl DecidingRouter {
+    fn new(target: Option<RouteTarget>) -> Self {
+        Self {
+            decision: Ok(RouteDecision {
+                catalog_revision: 1,
+                automatic: target,
+                options: vec![RouteOption {
+                    target: RouteTarget::Existing(ProjectId(2)),
+                    probability: 0.95,
+                }],
+                confidence: 0.90,
+                elapsed_ms: 10,
+                model: "jev-1.13.0".into(),
+            }),
+            calls: Mutex::default(),
+            key: Mutex::default(),
+        }
+    }
+}
+impl RoutingService for DecidingRouter {
+    fn snapshot(&self) -> RoutingSnapshot {
+        let key = self.key.lock().unwrap();
+        RoutingSnapshot {
+            provider: key
+                .as_ref()
+                .map(|(provider, _)| *provider)
+                .unwrap_or_default(),
+            configured: key.is_some(),
+            error: None,
+        }
+    }
+    fn save_key(&self, provider: RoutingProvider, key: String) -> Result<(), RoutingError> {
+        *self.key.lock().unwrap() = Some((provider, key));
+        Ok(())
+    }
+    fn remove_key(&self) -> Result<(), RoutingError> {
+        *self.key.lock().unwrap() = None;
+        Ok(())
+    }
+    fn decide(&self, prompt: &str) -> Result<RouteDecision, RoutingError> {
+        self.calls.lock().unwrap().push(prompt.into());
+        self.decision.clone()
+    }
+}
+
+#[gpui_kit::test]
+fn home_pointer_and_keyboard_route_once_to_existing_project(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(gpui_kit::init);
+    let projects = Arc::new(TestProjects::default());
+    let agents = Arc::new(ReadyAgents::default());
+    let router = Arc::new(DecidingRouter::new(Some(RouteTarget::Existing(ProjectId(
+        2,
+    )))));
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            Workbench::new(
+                agents.clone(),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                router.clone(),
+                window,
+                cx,
+            )
+        });
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("home-prompt", cx);
+    })
+    .unwrap();
+    cx.simulate_input(window.into(), "继续设计 Relay");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click("route-prompt", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(&*router.calls.lock().unwrap(), &["继续设计 Relay"]);
+    let commands = agents.0.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], (ProjectId(2), AgentCommand::Send(text)) if text == "继续设计 Relay")
+    );
+    assert_eq!(projects.snapshot().projects.len(), 3);
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("route-prompt").is_none());
+        assert!(window.try_find("send").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn routing_creates_once_and_explicit_project_messages_bypass_jev(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let projects = Arc::new(TestProjects::default());
+    let agents = Arc::new(ReadyAgents::default());
+    let router = Arc::new(DecidingRouter::new(Some(RouteTarget::NewProject)));
+    let window = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            projects.clone(),
+            router.clone(),
+            window,
+            cx,
+        )
+    });
+    window
+        .update(cx, |view, window, cx| {
+            view.routing.draft.update(cx, |draft, cx| {
+                draft.set_value("Plan my holiday", window, cx)
+            });
+        })
+        .unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.route_prompt(window, cx);
+            view.route_prompt(window, cx); // double click while deciding
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let catalog = projects.snapshot();
+    assert_eq!(catalog.projects.len(), 4);
+    assert_eq!(catalog.projects[3].name, "Plan my holiday");
+    assert!(catalog.projects[3].instructions.is_empty());
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.page == Page::Project(3));
+            assert!(view.routing.draft.read(cx).value().is_empty());
+            view.drafts[3].update(cx, |draft, cx| {
+                draft.set_value("Make it a weekend", window, cx)
+            });
+            view.send_message(&super::SendMessage, window, cx);
+        })
+        .unwrap();
+    assert_eq!(router.calls.lock().unwrap().len(), 1);
+    let commands = agents.0.lock().unwrap();
+    assert_eq!(commands.len(), 2);
+    assert!(commands.iter().all(|(id, _)| *id == ProjectId(4)));
+}
+
+#[gpui_kit::test]
+fn uncertain_or_failed_routing_preserves_input_and_never_executes(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    for result in [
+        DecidingRouter::new(None).decision,
+        Err(RoutingError::Unavailable),
+    ] {
+        let projects = Arc::new(TestProjects::default());
+        let agents = Arc::new(ReadyAgents::default());
+        let router = Arc::new(DecidingRouter {
+            decision: result,
+            calls: Mutex::default(),
+            key: Mutex::default(),
+        });
+        let window = cx.add_window(|window, cx| {
+            Workbench::new(
+                agents.clone(),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                router,
+                window,
+                cx,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| {
+                view.routing
+                    .draft
+                    .update(cx, |draft, cx| draft.set_value("继续", window, cx))
+            })
+            .unwrap();
+        window
+            .update(cx, |view, window, cx| view.route_prompt(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, cx| {
+                assert!(view.page == Page::Home);
+                assert_eq!(view.routing.draft.read(cx).value().as_ref(), "继续");
+            })
+            .unwrap();
+        assert_eq!(projects.snapshot().projects.len(), 3);
+        assert!(agents.0.lock().unwrap().is_empty());
+    }
+}
+
+#[gpui_kit::test]
+fn leaving_home_during_routing_never_hijacks_navigation_or_creates(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    for return_home in [false, true] {
+        let projects = Arc::new(TestProjects::default());
+        let agents = Arc::new(ReadyAgents::default());
+        let router = Arc::new(DecidingRouter::new(Some(RouteTarget::NewProject)));
+        let window = cx.add_window(|window, cx| {
+            Workbench::new(
+                agents.clone(),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                router,
+                window,
+                cx,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| {
+                view.routing
+                    .draft
+                    .update(cx, |draft, cx| draft.set_value("A new task", window, cx))
+            })
+            .unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                view.route_prompt(window, cx);
+                view.navigate(Page::Settings, window, cx);
+                if return_home {
+                    view.navigate(Page::Home, window, cx);
+                }
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, cx| {
+                assert!(
+                    view.page
+                        == if return_home {
+                            Page::Home
+                        } else {
+                            Page::Settings
+                        }
+                );
+                assert_eq!(view.routing.draft.read(cx).value().as_ref(), "A new task");
+            })
+            .unwrap();
+        assert_eq!(projects.snapshot().projects.len(), 3);
+        assert!(agents.0.lock().unwrap().is_empty());
+    }
+}
+
+#[gpui_kit::test]
+fn jev_settings_save_and_remove_masked_key_without_retaining_input(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(gpui_kit::init);
+    let router = Arc::new(DecidingRouter::new(None));
+    let view_cell = std::cell::RefCell::new(None);
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            Workbench::new(
+                Arc::new(ReadyAgents::default()),
+                Arc::new(TestSettings::default()),
+                Arc::new(TestProjects::default()),
+                router.clone(),
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| view.navigate(Page::Settings, window, cx));
+        *view_cell.borrow_mut() = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("jev-api-key", cx);
+    })
+    .unwrap();
+    cx.simulate_input(window.into(), "fake-test-key");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click("save-jev-key", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(router.snapshot().configured);
+    cx.update(|cx| {
+        view_cell.borrow().as_ref().unwrap().update(cx, |view, cx| {
+            assert!(view.routing.key.read(cx).value().is_empty());
+            assert!(view.routing.key.read(cx).presentation().is_masked());
+        })
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("typesafe", cx);
+        window.click("jev-api-key", cx);
+    })
+    .unwrap();
+    assert_eq!(
+        router.snapshot().provider,
+        RoutingProvider::Vercel,
+        "Selecting alone does not change the saved channel"
+    );
+    cx.simulate_input(window.into(), "different-provider-test-key");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click("save-jev-key", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(router.snapshot().provider, RoutingProvider::TypeSafe);
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("remove-jev-key", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!router.snapshot().configured);
+}
+
 #[gpui_kit::test]
 fn project_and_note_forms_save_through_real_pointer_and_keyboard_events(cx: &mut TestAppContext) {
     use gpui_kit::{component::Root, test::TestWindowExt};
@@ -185,6 +541,7 @@ fn project_and_note_forms_save_through_real_pointer_and_keyboard_events(cx: &mut
                 Arc::new(TestAgents::default()),
                 Arc::new(TestSettings::default()),
                 projects.clone(),
+                Arc::new(TestRouting),
                 window,
                 cx,
             )
@@ -264,6 +621,7 @@ fn new_projects_appear_without_resetting_other_drafts_and_empty_catalog_is_rende
             Arc::new(TestAgents::default()),
             Arc::new(TestSettings::default()),
             projects.clone(),
+            Arc::new(TestRouting),
             window,
             cx,
         )

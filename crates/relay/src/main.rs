@@ -1,7 +1,7 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
 use relay_core::settings::SettingsService;
-use relay_runtime::{AgentRuntime, ProjectStore, SettingsStore};
+use relay_runtime::{AgentRuntime, JevRouter, ProjectStore, SettingsStore};
 use relay_ui::{FocusSearch, Quit, SendMessage, Workbench, apply_language};
 use std::sync::Arc;
 
@@ -9,7 +9,8 @@ fn main() {
     let directory = AgentRuntime::default_directory();
     let settings = Arc::new(SettingsStore::new(directory.clone()));
     let projects = Arc::new(ProjectStore::new(directory.clone()));
-    let agents = Arc::new(AgentRuntime::new(directory, projects.clone()));
+    let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
+    let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
@@ -60,8 +61,9 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
-                        let view =
-                            cx.new(|cx| Workbench::new(agents, settings, projects, window, cx));
+                        let view = cx.new(|cx| {
+                            Workbench::new(agents, settings, projects, routing, window, cx)
+                        });
                         cx.new(|cx| Root::new(view, window, cx))
                     },
                 )

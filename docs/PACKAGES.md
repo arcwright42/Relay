@@ -8,8 +8,8 @@
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`gpui-kit` |
 | `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
-| `relay-core` | 项目、资料、对话诊断、AgentService / ProjectService / SettingsService 接口 | 无 |
-| `relay-runtime` | 安装、项目存储、确定性上下文快照与增量、会话恢复、对话诊断与应用偏好持久化 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2` |
+| `relay-core` | 项目、资料、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
+| `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
 | `xtask` | 包边界检查、质量检查、图标生成与本地 macOS 打包 | `serde_json` |
 
@@ -18,6 +18,8 @@
 运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口注入 AgentService、ProjectService 和 SettingsService；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。项目预览资料已移除。
 
 当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。继续沿用现有 crate，未来数据库和 macOS 能力需要独立边界时再拆分；接入前同步允许依赖图。
+
+Jev 位于 `relay-runtime::routing`，使用固定 `ureq 3.4.2`（Rustls / JSON）调用 HTTPS API，密钥通过固定 `security-framework 3.7.0` 保存到 macOS 钥匙串。RoutingService 不使用 ACP，UI 只读取领域决策和配置状态。HTTP 和 Keychain 写入在后台调用，内存快照锁不覆盖阻塞写入；测试使用本地 HTTP 服务和内存凭据，不访问个人密钥。不新增 crate；新增依赖已同步精确版本、锁文件与包边界白名单。
 
 ACP SDK 仍固定 2.2.0，仅显式开启 `unstable_end_turn_token_usage` 来读取可选用量；不启用整个 unstable 集合，不升级 lockfile。缺失或损坏的可选 usage 不影响对话。测试专用 `relay-runtime/test-support` 只转发 `relay-acp/test-support`，用内存传输验证快照交付、写入顺序与失败恢复；产品默认构建不含测试传输。
 
