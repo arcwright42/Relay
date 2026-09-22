@@ -1,13 +1,20 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
+use relay_core::ProjectId;
+use relay_runtime::AgentRuntime;
 use relay_ui::{FocusSearch, SendMessage, Workbench};
+use std::sync::Arc;
 
 actions!(relay, [Quit]);
 
 fn main() {
+    let agents = Arc::new(AgentRuntime::new(
+        AgentRuntime::default_directory(),
+        [ProjectId(1), ProjectId(2), ProjectId(3)],
+    ));
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
-        .run(|cx| {
+        .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Light, None, cx);
             Theme::global_mut(cx).font_size = px(14.);
@@ -17,6 +24,14 @@ fn main() {
                 KeyBinding::new("cmd-enter", SendMessage, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
+            let shutdown_agents = agents.clone();
+            cx.on_app_quit(move |cx| {
+                let agents = shutdown_agents.clone();
+                cx.background_executor().spawn(async move {
+                    agents.shutdown();
+                })
+            })
+            .detach();
             let menus = vec![Menu::new("Relay").items([MenuItem::action("Quit Relay", Quit)])];
             #[cfg(feature = "devtools")]
             let menus = {
@@ -49,7 +64,7 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
-                        let view = cx.new(|cx| Workbench::new(window, cx));
+                        let view = cx.new(|cx| Workbench::new(agents, window, cx));
                         cx.new(|cx| Root::new(view, window, cx))
                     },
                 )

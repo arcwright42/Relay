@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/relay", "crates/relay-core", "crates/relay-ui", "xtask"]
+members = ["crates/relay", "crates/relay-core", "crates/relay-ui", "crates/relay-runtime", "crates/relay-acp", "xtask"]
 exclude = ["vendor/gpui-pre"]
 default-members = ["crates/relay"]
 resolver = "3"
@@ -11,10 +11,19 @@ rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
+agent-client-protocol = "=2.2.0"
+anyhow = "=1.0.104"
+async-channel = "=2.5.0"
+async-io = "=2.6.0"
+futures-lite = "=2.6.1"
 gpui-kit = "=0.6.6"
+relay-acp = { path = "crates/relay-acp", version = "=0.1.0" }
 relay-core = { path = "crates/relay-core", version = "=0.1.0" }
+relay-runtime = { path = "crates/relay-runtime", version = "=0.1.0" }
 relay-ui = { path = "crates/relay-ui", version = "=0.1.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+sha2 = "=0.11.0"
 
 # Keep Inspector controls clickable while selecting an element; see vendor/README.md.
 [patch.crates-io]

@@ -1,6 +1,6 @@
 # Relay 技术架构
 
-状态：工作台壳子已实现，其余为目标架构。需求更新与资料核对：2026-09-22。
+状态：工作台、Codex 托管安装、ACP 主对话及项目对话持久化已实现；完整上下文库与委派仍为目标架构。需求更新与资料核对：2026-09-22。
 
 ## 1. 已确定的架构边界
 
@@ -35,9 +35,9 @@
 
 ## 2. Rust 模块划分
 
-以下为职责规划。UI 框架已确定为 GPUI + GPUI Kit，具体 crate 边界与依赖版本在实现时确定。
+以下区分当前包边界与长期职责规划。UI 框架为 GPUI + GPUI Kit，当前依赖均固定版本。
 
-当前代码采用 `relay`（应用入口）、`relay-ui`（视图与交互）、`relay-core`（项目领域数据）和 `xtask`（开发工具）的 workspace。后续模块在有具体实现时再拆包，依赖方向与检查规则见 [包治理](PACKAGES.md)。
+当前 workspace 包含 `relay`（应用入口及装配）、`relay-ui`（视图与交互）、`relay-core`（领域数据与 AgentService）、`relay-runtime`（安装、运行状态、对话存储）、`relay-acp`（SDK、进程与协议边界）和 `xtask`（开发工具）。UI 只依赖领域接口，由入口注入 runtime。后续模块有具体实现时再拆包，依赖方向与检查规则见 [包治理](PACKAGES.md)。
 
 | 模块 | 职责 |
 | --- | --- |
@@ -52,7 +52,7 @@
 | storage | 本地数据库、附件与产物索引 |
 | voice | 转写、朗读、唤醒与视觉输入的轮次关联 |
 
-本地数据库加附件目录是初始存储建议。Rust 核心与 UI 渲染解耦；UI 采用 GPUI + GPUI Kit，详见 [UI 框架选型](UI-FRAMEWORK.md)。具体依赖版本尚未锁定。系统能力通过 Rust 平台模块封装，必要时通过 FFI 调用系统 API。
+当前对话按项目使用有格式版本的 JSON 文件，以临时文件、sync 和 rename 替换保存；流式回复定期检查点，退出时刷新。无法读取的文件保留原样，阻止覆盖。完整项目资料库实现时再引入数据库和附件索引。Rust 核心与 UI 渲染解耦；系统能力未来通过 Rust 平台模块封装。
 
 ## 3. ACP 接入
 
@@ -67,7 +67,11 @@ ACP 定义客户端与 Agent 的双向请求和事件通知。Relay 实现客户
 | OpenCode | opencode acp | 使用其 ACP 子进程入口 |
 | 其他 Agent | 兼容的 ACP 入口 | 按协商能力启用功能 |
 
-上述路径来自维护方文档，目前仅完成资料核对，尚未安装适配器或验证实际会话。[Codex ACP](https://github.com/agentclientprotocol/codex-acp)、[Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp)、[OpenCode ACP](https://opencode.ai/docs/acp/)
+当前仅实现 Codex，并完成托管安装、模型发现和真实消息验证；其余为未来路径。[Codex ACP](https://github.com/agentclientprotocol/codex-acp)、[Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp)、[OpenCode ACP](https://opencode.ai/docs/acp/)
+
+Codex 采用内置目录、按需托管安装及可选本地可执行文件。连接链路为 `GPUI → AgentService → relay-runtime → relay-acp → stdio → codex-acp → Codex`。Rust ACP SDK 固定 2.2.0，协议先协商 v1。上游适配器使用 JavaScript，Node 与适配器是单独管理的外部组件；Relay 的 UI、领域、安装器、状态机和协议客户端均为 Rust。
+
+每个项目独立维护连接、工作目录、原生会话引用、可见消息与已确认的配置偏好。模型及其他选择项来自 `configOptions`；请求确认前禁止重复切换，不猜测模型 ID。后台工作线程负责安装、协议 I/O 和持久化，UI 只订阅快照修订。连接 generation 防止旧进程的迟到事件改变新会话。项目历史恢复与原生 session/load 分开处理，抑制原生历史重播带来的消息重复。详见 [Codex 接入](CODEX.md)。
 
 适配器可能包含自己的运行时依赖。使用用户已有二进制还是适配器配套版本，需要在连接设置和兼容性验证中明确。ACP 连接也不代表自动获得订阅、图像或恢复能力。
 
@@ -160,4 +164,4 @@ macOS 候选路径为辅助功能 API 获取选区和窗口信息；目标应用
 | 5 | 网页划词、快捷面板和项目主窗口的同一工作链路 |
 | 6 | 按键语音、朗读、截图问答，再扩展唤醒与持续视觉 |
 
-文档描述目标架构，不代表上述能力已经实现或通过运行验证。
+当前已完成工作台、Codex ACP 主对话及可见历史恢复；材料导入、完整项目上下文、委派和桌面多模态入口按上述目标继续实现。

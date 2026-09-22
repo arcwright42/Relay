@@ -1,3 +1,4 @@
+mod agents;
 mod conversation;
 mod navigation;
 mod pages;
@@ -11,7 +12,8 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::preview::{Page, preview_projects};
-use relay_core::{ContextKind, Project};
+use relay_core::{ContextKind, Project, agents::*};
+use std::{sync::Arc, time::Duration};
 
 actions!(relay, [FocusSearch, SendMessage]);
 
@@ -76,11 +78,22 @@ pub struct Workbench {
     drafts: Vec<Entity<TextareaState>>,
     search: Entity<InputState>,
     focus: FocusHandle,
+    agent_service: Arc<dyn AgentService>,
+    agent_states: Vec<AgentSnapshot>,
+    agent_errors: Vec<Option<String>>,
+    agent_revision: u64,
+    picker_open: bool,
+    conversation_scroll: ScrollHandle,
+    _agent_updates: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workbench {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        agent_service: Arc<dyn AgentService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let projects = preview_projects();
         let drafts: Vec<_> = projects
             .iter()
@@ -103,18 +116,40 @@ impl Workbench {
         }
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let agent_states = projects
+            .iter()
+            .map(|p| agent_service.snapshot(p.id))
+            .collect();
+        let agent_revision = agent_service.revision();
+        let executor = cx.background_executor().clone();
+        let updates = cx.spawn(async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(100)).await;
+                if this.update(cx, |this, cx| this.refresh_agents(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         Self {
             page: Page::Project(0),
             selected_project: 0,
+            agent_errors: vec![None; projects.len()],
             projects,
             drafts,
             search,
             focus,
+            agent_service,
+            agent_states,
+            agent_revision,
+            picker_open: false,
+            conversation_scroll: ScrollHandle::new(),
+            _agent_updates: updates,
             _subscriptions: subscriptions,
         }
     }
 
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = false;
         if let Page::Project(index) = page {
             self.selected_project = index;
         }
@@ -138,12 +173,21 @@ impl Workbench {
         {
             return;
         }
-        explain(
-            "Connect your project agent",
-            "Your message is ready. Connect a local agent to start the conversation. Your draft will stay in this project.",
-            window,
-            cx,
-        );
+        let text = self.drafts[self.selected_project]
+            .read(cx)
+            .value()
+            .to_string();
+        if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
+            self.picker_open = true;
+            cx.notify();
+            return;
+        }
+        if self.agent_action(AgentCommand::Send(text), cx) {
+            self.drafts[self.selected_project].update(cx, |draft, cx| {
+                draft.set_value("", window, cx);
+            });
+            self.conversation_scroll.scroll_to_bottom();
+        }
     }
 
     fn use_prompt(&mut self, prompt: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -222,9 +266,15 @@ impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < px(1280.);
         let content = match self.page {
-            Page::Project(_) => self.welcome(compact, cx),
+            Page::Project(_) => {
+                if self.agent_states[self.selected_project].messages.is_empty() {
+                    self.welcome(compact, cx)
+                } else {
+                    self.conversation(compact, cx)
+                }
+            }
             Page::Home => self.home(cx),
-            Page::Agents => self.agents(),
+            Page::Agents => self.agents(cx),
             Page::Settings => self.settings(),
             Page::Inbox => column()
                 .flex_1()
@@ -257,6 +307,14 @@ impl Render for Workbench {
             .bg(rgb(SURFACE))
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::send_message))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.picker_open && event.keystroke.key == "escape" {
+                    this.picker_open = false;
+                    window.focus(&this.focus, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .child(self.sidebar(compact, cx))
             .child(
                 column()

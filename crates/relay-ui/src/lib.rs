@@ -1,4 +1,5 @@
-//! Views and session-local interaction state. No agent processes are started here.
+//! GPUI views over framework-independent agent service contracts.
+//! Process ownership, installation and persistence live in relay-runtime / relay-acp.
 
 #[cfg(feature = "devtools")]
 mod devtools;

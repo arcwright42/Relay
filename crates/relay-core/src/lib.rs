@@ -1,7 +1,9 @@
 //! Project data belongs to Relay, independently of any UI or agent session.
 //! This package intentionally has no framework or runtime dependencies.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub mod agents;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProjectId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
