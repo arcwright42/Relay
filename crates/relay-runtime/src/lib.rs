@@ -1,13 +1,19 @@
 //! Agent orchestration and storage, with no dependency on GPUI.
+mod context;
+#[cfg(all(test, feature = "test-support"))]
+mod delivery_tests;
 mod installer;
+mod metrics;
+mod projects;
 mod settings;
 mod store;
 
+pub use projects::ProjectStore;
 pub use settings::SettingsStore;
 
 use installer::{Installer, RELEASE};
 use relay_acp::{Command as AcpCommand, ConnectionHandle, Event};
-use relay_core::{ProjectId, agents::*};
+use relay_core::{ProjectId, agents::*, projects::ProjectService};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -24,15 +30,23 @@ struct ProjectState {
     session_id: Option<String>,
     session_key: Option<String>,
     preferences: BTreeMap<String, String>,
-    needs_context: bool,
+    needs_history: bool,
+    context_checkpoint: context::Checkpoint,
+    turn: Option<PendingTurn>,
     last_checkpoint: Instant,
     storage_error: bool,
+}
+
+struct PendingTurn {
+    started: Instant,
+    snapshot: context::Snapshot,
+    context_sent: bool,
 }
 
 impl ProjectState {
     fn saved(&self) -> store::SavedProject {
         store::SavedProject {
-            version: 1,
+            version: 2,
             local_codex: match &self.view.source {
                 AgentSource::Managed => None,
                 AgentSource::Local(path) => Some(path.clone()),
@@ -40,6 +54,8 @@ impl ProjectState {
             cwd: Some(self.view.working_directory.clone()),
             session_id: self.session_id.clone(),
             session_key: self.session_key.clone(),
+            context_checkpoint: self.context_checkpoint.clone(),
+            restore_history: self.needs_history,
             preferences: self.preferences.clone(),
             messages: self
                 .view
@@ -92,15 +108,15 @@ impl Shared {
         true
     }
 
-    fn persist(&self, project: ProjectId) {
+    fn persist(&self, project: ProjectId) -> bool {
         let _write = self.persistence.lock().expect("persistence lock");
         let saved = {
             let projects = self.projects.lock().expect("project lock");
             let Some(state) = projects.get(&project) else {
-                return;
+                return false;
             };
             if state.storage_error {
-                return;
+                return false;
             } // Never overwrite a file we could not read.
             state.saved()
         };
@@ -114,7 +130,9 @@ impl Shared {
                 state.view.error = Some(format!("Could not save this conversation: {error}"));
             }
             self.revision.fetch_add(1, Ordering::Release);
+            return false;
         }
+        true
     }
 
     fn event(&self, project: ProjectId, generation: u64, event: Event) {
@@ -134,7 +152,10 @@ impl Shared {
                 state.view.auth_methods.clear();
                 state.session_id = Some(session_id);
                 state.session_key = Some(session_key(&state.view));
-                state.needs_context = !resumed && !state.view.messages.is_empty();
+                if !resumed {
+                    state.context_checkpoint = context::Checkpoint::default();
+                    state.needs_history = !state.view.messages.is_empty();
+                }
                 persist = true;
             }
             Event::Configs { configs, confirmed } => {
@@ -150,7 +171,14 @@ impl Shared {
                 persist = true;
             }
             Event::Text(text) => {
+                let elapsed = state.turn.as_ref().map(|turn| elapsed_ms(turn.started));
                 if let Some(message) = streaming_message(state) {
+                    if !text.is_empty()
+                        && let Some(metrics) = message.metrics.as_mut()
+                        && metrics.first_text_ms.is_none()
+                    {
+                        metrics.first_text_ms = elapsed;
+                    }
                     message.text.push_str(&text);
                 }
                 if state.last_checkpoint.elapsed() > Duration::from_secs(1) {
@@ -174,22 +202,19 @@ impl Shared {
             }
             Event::Permission(permission) => state.view.permissions.push(permission),
             Event::PermissionResolved(id) => state.view.permissions.retain(|p| p.id != id),
-            Event::TurnEnded { cancelled } => {
-                if let Some(message) = streaming_message(state) {
-                    message.status = if cancelled {
-                        MessageStatus::Interrupted
-                    } else {
-                        MessageStatus::Complete
-                    };
+            Event::TurnEnded { outcome, usage } => {
+                if state.turn.is_some() {
+                    finish_turn(state, outcome, usage);
+                    state.view.status = ConnectionStatus::Ready;
                 }
                 state.view.permissions.clear();
-                state.view.status = ConnectionStatus::Ready;
                 persist = true;
             }
             Event::Error { message, fatal } => {
                 state.view.error = Some(message);
                 state.view.pending_config = None;
                 if fatal {
+                    finish_turn(state, TurnOutcome::Failed, None);
                     state.view.status = ConnectionStatus::Failed;
                     state.view.permissions.clear();
                     if let Some(message) = streaming_message(state) {
@@ -207,6 +232,33 @@ impl Shared {
     }
 }
 
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn finish_turn(state: &mut ProjectState, outcome: TurnOutcome, usage: Option<TokenUsage>) {
+    if let Some(turn) = state.turn.take() {
+        if let Some(message) = streaming_message(state) {
+            if let Some(metrics) = message.metrics.as_mut() {
+                metrics.total_ms = Some(elapsed_ms(turn.started));
+                metrics.outcome = Some(outcome);
+                metrics.usage = usage;
+            }
+            message.status = if outcome == TurnOutcome::Complete {
+                MessageStatus::Complete
+            } else {
+                MessageStatus::Interrupted
+            };
+        }
+        if outcome == TurnOutcome::Complete {
+            if turn.context_sent {
+                state.context_checkpoint.acknowledge(turn.snapshot);
+            }
+            state.needs_history = false;
+        }
+    }
+}
+
 fn streaming_message(state: &mut ProjectState) -> Option<&mut ChatMessage> {
     state
         .view
@@ -218,6 +270,7 @@ fn streaming_message(state: &mut ProjectState) -> Option<&mut ChatMessage> {
 type Connections = Arc<Mutex<BTreeMap<ProjectId, ConnectionHandle>>>;
 
 pub struct AgentRuntime {
+    project_service: Arc<dyn ProjectService>,
     shared: Arc<Shared>,
     connections: Connections,
     installer: Arc<Installer>,
@@ -233,11 +286,11 @@ impl AgentRuntime {
             .join("Library/Application Support/Relay")
     }
 
-    pub fn new(root: PathBuf, project_ids: impl IntoIterator<Item = ProjectId>) -> Self {
+    pub fn new(root: PathBuf, project_service: Arc<dyn ProjectService>) -> Self {
         let installer = Arc::new(Installer::new(root.clone()));
         let installed = installer.installed();
         let mut projects = BTreeMap::new();
-        for id in project_ids {
+        for id in project_service.snapshot().projects.iter().map(|p| p.id) {
             let loaded = store::load(&root, id);
             let error = loaded.as_ref().err().map(|e| format!("Could not read this project's saved conversation: {e}. The existing file has been preserved."));
             let saved = loaded.unwrap_or_default();
@@ -268,13 +321,16 @@ impl AgentRuntime {
                     session_id: saved.session_id,
                     session_key: saved.session_key,
                     preferences: saved.preferences,
-                    needs_context: false,
+                    needs_history: saved.restore_history,
+                    context_checkpoint: saved.context_checkpoint,
+                    turn: None,
                     last_checkpoint: Instant::now(),
                     storage_error: error.is_some(),
                 },
             );
         }
         Self {
+            project_service,
             shared: Arc::new(Shared {
                 root,
                 projects: Mutex::new(projects),
@@ -286,6 +342,44 @@ impl AgentRuntime {
             installer,
             preparations: Mutex::new(Vec::new()),
         }
+    }
+
+    fn ensure_project(&self, id: ProjectId) -> Result<(), String> {
+        if self
+            .shared
+            .projects
+            .lock()
+            .expect("project lock")
+            .contains_key(&id)
+        {
+            return Ok(());
+        }
+        if self.project_service.project(id).is_none() {
+            return Err("Unknown project".into());
+        }
+        let mut projects = self.shared.projects.lock().expect("project lock");
+        if let std::collections::btree_map::Entry::Vacant(entry) = projects.entry(id) {
+            entry.insert(ProjectState {
+                view: AgentSnapshot {
+                    working_directory: self
+                        .shared
+                        .root
+                        .join(format!("projects/{}/workspace", id.0)),
+                    ..Default::default()
+                },
+                generation: 0,
+                session_id: None,
+                session_key: None,
+                preferences: BTreeMap::new(),
+                needs_history: false,
+                context_checkpoint: context::Checkpoint::default(),
+                turn: None,
+                last_checkpoint: Instant::now(),
+                storage_error: false,
+            });
+            self.shared.revision.fetch_add(1, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn connect(&self, project: ProjectId, source: AgentSource) -> Result<(), String> {
@@ -411,6 +505,7 @@ impl AgentRuntime {
         let ids: Vec<_> = {
             let mut projects = self.shared.projects.lock().expect("project lock");
             for state in projects.values_mut() {
+                finish_turn(state, TurnOutcome::Failed, None);
                 if let Some(message) = streaming_message(state) {
                     message.status = MessageStatus::Interrupted;
                 }
@@ -438,6 +533,95 @@ impl AgentRuntime {
             .ok_or("Connect Codex first.")?
             .send(command)
     }
+
+    fn queue_prompt(
+        &self,
+        project: ProjectId,
+        generation: u64,
+        command: AcpCommand,
+    ) -> Result<(), String> {
+        let shared = self.shared.clone();
+        let connections = self.connections.clone();
+        let worker = std::thread::Builder::new()
+            .name("relay-prompt".into())
+            .spawn(move || {
+                // Persist uncertainty BEFORE sending: a crash must never skip unconfirmed context.
+                if !shared.persist(project) {
+                    shared.event(
+                        project,
+                        generation,
+                        Event::Error {
+                            message: "Could not save the pending turn. No prompt was sent.".into(),
+                            fatal: false,
+                        },
+                    );
+                    shared.event(
+                        project,
+                        generation,
+                        Event::TurnEnded {
+                            outcome: TurnOutcome::Failed,
+                            usage: None,
+                        },
+                    );
+                    return;
+                }
+                let result = {
+                    let projects = shared.projects.lock().expect("project lock");
+                    let Some(state) = projects
+                        .get(&project)
+                        .filter(|state| state.generation == generation)
+                    else {
+                        return;
+                    };
+                    if shared.shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if state.view.status == ConnectionStatus::Cancelling {
+                        drop(projects);
+                        shared.event(
+                            project,
+                            generation,
+                            Event::TurnEnded {
+                                outcome: TurnOutcome::Cancelled,
+                                usage: None,
+                            },
+                        );
+                        return;
+                    }
+                    connections
+                        .lock()
+                        .expect("connection lock")
+                        .get(&project)
+                        .ok_or_else(|| {
+                            "The agent connection is closed. Reconnect to continue.".to_owned()
+                        })
+                        .and_then(|connection| connection.send(command))
+                };
+                if let Err(message) = result {
+                    shared.event(
+                        project,
+                        generation,
+                        Event::Error {
+                            message,
+                            fatal: false,
+                        },
+                    );
+                    shared.event(
+                        project,
+                        generation,
+                        Event::TurnEnded {
+                            outcome: TurnOutcome::Failed,
+                            usage: None,
+                        },
+                    );
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        let mut workers = self.preparations.lock().expect("preparation lock");
+        workers.retain(|worker| !worker.is_finished());
+        workers.push(worker);
+        Ok(())
+    }
 }
 
 impl AgentService for AgentRuntime {
@@ -445,6 +629,12 @@ impl AgentService for AgentRuntime {
         self.shared.revision.load(Ordering::Acquire)
     }
     fn snapshot(&self, project: ProjectId) -> AgentSnapshot {
+        if let Err(error) = self.ensure_project(project) {
+            return AgentSnapshot {
+                error: Some(error),
+                ..Default::default()
+            };
+        }
         self.shared
             .projects
             .lock()
@@ -455,6 +645,19 @@ impl AgentService for AgentRuntime {
     }
 
     fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String> {
+        if self.shared.shutdown.load(Ordering::Acquire) {
+            return Err("Relay is shutting down.".into());
+        }
+        self.ensure_project(project)?;
+        let definition = if matches!(command, AgentCommand::Send(_)) {
+            Some(
+                self.project_service
+                    .project(project)
+                    .ok_or("Unknown project")?,
+            )
+        } else {
+            None
+        };
         if let AgentCommand::Connect(source) = command {
             return self.connect(project, source);
         }
@@ -481,6 +684,7 @@ impl AgentService for AgentRuntime {
             return Ok(());
         }
         let mut persist = false;
+        let mut prompt = None;
         let mut projects = self.shared.projects.lock().expect("project lock");
         let state = projects.get_mut(&project).ok_or("Unknown project")?;
         if state.storage_error {
@@ -490,6 +694,7 @@ impl AgentService for AgentRuntime {
         }
         match command {
             AgentCommand::Disconnect => {
+                finish_turn(state, TurnOutcome::Failed, None);
                 state.generation += 1;
                 state.view.status = ConnectionStatus::Disconnected;
                 state.view.permissions.clear();
@@ -551,17 +756,45 @@ impl AgentService for AgentRuntime {
                 if text.is_empty() {
                     return Ok(());
                 }
-                let context = state
-                    .needs_context
-                    .then(|| history_context(&state.view.messages));
-                self.send_command(
-                    project,
+                let snapshot =
+                    context::Snapshot::from_project(definition.as_ref().expect("send project"));
+                let delivery = snapshot.delivery(if state.context_checkpoint.uncertain {
+                    None
+                } else {
+                    state.context_checkpoint.acknowledged.as_ref()
+                });
+                let metrics = TurnMetrics {
+                    model: state.view.model().map(|model| model.current.clone()),
+                    context_kind: delivery.kind,
+                    context_revision: Some(snapshot.revision),
+                    context_bytes: delivery.text.as_ref().map_or(0, String::len),
+                    restored_history: state.needs_history,
+                    ..Default::default()
+                };
+                let mut parts = Vec::new();
+                if let Some(text) = delivery.text {
+                    parts.push(text);
+                }
+                if state.needs_history {
+                    parts.push(history_context(&state.view.messages));
+                }
+                let context = (!parts.is_empty()).then(|| parts.join("\n\n"));
+                prompt = Some((
+                    state.generation,
                     AcpCommand::Prompt {
                         text: text.clone(),
                         context,
                     },
-                )?;
-                state.needs_context = false;
+                ));
+                let context_sent = delivery.kind != ContextDeliveryKind::Unchanged;
+                if context_sent {
+                    state.context_checkpoint.uncertain = true;
+                }
+                state.turn = Some(PendingTurn {
+                    started: Instant::now(),
+                    snapshot,
+                    context_sent,
+                });
                 let id = state.view.messages.last().map_or(1, |m| m.id + 1);
                 state.view.messages.push(ChatMessage {
                     id,
@@ -569,6 +802,7 @@ impl AgentService for AgentRuntime {
                     text,
                     status: MessageStatus::Complete,
                     tools: vec![],
+                    metrics: None,
                 });
                 state.view.messages.push(ChatMessage {
                     id: id + 1,
@@ -576,6 +810,7 @@ impl AgentService for AgentRuntime {
                     text: String::new(),
                     status: MessageStatus::Streaming,
                     tools: vec![],
+                    metrics: Some(metrics),
                 });
                 state.view.status = ConnectionStatus::Running;
                 state.view.error = None;
@@ -613,6 +848,7 @@ impl AgentService for AgentRuntime {
                 state.view.status = ConnectionStatus::Disconnected;
                 state.session_id = None;
                 state.session_key = None;
+                state.context_checkpoint = context::Checkpoint::default();
                 state.view.configs.clear();
                 state.view.permissions.clear();
                 state.view.pending_config = None;
@@ -626,7 +862,27 @@ impl AgentService for AgentRuntime {
         }
         drop(projects);
         self.shared.revision.fetch_add(1, Ordering::Release);
-        if persist {
+        if let Some((generation, command)) = prompt {
+            if let Err(message) = self.queue_prompt(project, generation, command) {
+                self.shared.event(
+                    project,
+                    generation,
+                    Event::Error {
+                        message: message.clone(),
+                        fatal: false,
+                    },
+                );
+                self.shared.event(
+                    project,
+                    generation,
+                    Event::TurnEnded {
+                        outcome: TurnOutcome::Failed,
+                        usage: None,
+                    },
+                );
+                return Err(message);
+            }
+        } else if persist {
             let shared = self.shared.clone();
             std::thread::spawn(move || shared.persist(project));
         }
@@ -681,10 +937,18 @@ fn history_context(messages: &[ChatMessage]) -> String {
 mod tests {
     use super::*;
     fn runtime() -> AgentRuntime {
-        AgentRuntime::new(
-            std::env::temp_dir().join(format!("relay-state-test-{}", installer::unique_id())),
-            [ProjectId(1), ProjectId(2)],
-        )
+        let root =
+            std::env::temp_dir().join(format!("relay-state-test-{}", installer::unique_id()));
+        let projects = Arc::new(ProjectStore::new(root.clone()));
+        projects
+            .apply(relay_core::projects::ProjectCommand::Create(
+                relay_core::projects::ProjectDraft {
+                    name: "Second".into(),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        AgentRuntime::new(root, projects)
     }
     #[test]
     fn late_events_cannot_mutate_a_replaced_session_or_another_project() {
@@ -740,11 +1004,12 @@ mod tests {
                     text: text.into(),
                     status,
                     tools: vec![],
+                    metrics: None,
                 })
             });
         }
         drop(runtime);
-        let restored = AgentRuntime::new(root.clone(), [ProjectId(1), ProjectId(2)]);
+        let restored = AgentRuntime::new(root.clone(), Arc::new(ProjectStore::new(root.clone())));
         assert_eq!(restored.snapshot(ProjectId(1)).messages[0].text, "Partial");
         assert_eq!(
             restored.snapshot(ProjectId(1)).messages[0].status,
@@ -769,7 +1034,7 @@ mod tests {
         drop(runtime);
         let path = root.join("projects/1/conversation.json");
         std::fs::write(&path, "damaged original").unwrap();
-        let restored = AgentRuntime::new(root.clone(), [ProjectId(1)]);
+        let restored = AgentRuntime::new(root.clone(), Arc::new(ProjectStore::new(root.clone())));
         assert!(restored.snapshot(ProjectId(1)).error.is_some());
         assert!(
             restored

@@ -1,9 +1,19 @@
 use crate::Event;
 use agent_client_protocol::schema::v1 as acp;
 use relay_core::agents::{
-    ConfigChoice, PermissionChoice, PermissionRequest, SessionConfig, ToolActivity,
+    ConfigChoice, PermissionChoice, PermissionRequest, SessionConfig, TokenUsage, ToolActivity,
 };
 use serde_json::Value;
+
+pub fn usage(value: acp::Usage) -> TokenUsage {
+    TokenUsage {
+        input_tokens: value.input_tokens,
+        output_tokens: value.output_tokens,
+        cached_read_tokens: value.cached_read_tokens,
+        cached_write_tokens: value.cached_write_tokens,
+        thought_tokens: value.thought_tokens,
+    }
+}
 
 pub fn configs(options: &[acp::SessionConfigOption]) -> Vec<SessionConfig> {
     options

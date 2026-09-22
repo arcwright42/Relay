@@ -104,14 +104,29 @@ impl Workbench {
                     )),
             )
             .child(
-                muted(self.text(Text::Projects))
-                    .text_size(px(12.))
+                row()
+                    .justify_between()
                     .px(px(10.))
-                    .mt(px(32.))
-                    .mb(px(9.)),
+                    .mt(px(24.))
+                    .mb(px(7.))
+                    .child(muted(self.text(Text::Projects)).text_size(px(12.)))
+                    .child(
+                        icon_button(
+                            "create-project",
+                            IconName::Plus,
+                            self.text(Text::NewProject),
+                        )
+                        .disabled(self.project_error.is_some())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.edit_project(None, window, cx)),
+                        ),
+                    ),
             )
             .child(
                 column()
+                    .id("sidebar-projects")
+                    .max_h(px(380.))
+                    .overflow_y_scroll()
                     .gap(px(3.))
                     .children(visible.iter().map(|(index, project)| {
                         self.nav_button(
@@ -220,27 +235,21 @@ impl Workbench {
                     .child(
                         icon_button(
                             "project-members",
-                            IconName::Users,
+                            IconName::Settings,
                             self.text(Text::ProjectDetails),
                         )
                         .on_click(cx.listener(|this, _, window, cx| {
-                            explain(
-                                this.projects[this.selected_project].name.clone(),
-                                this.text(Text::ProjectDetailsBody),
-                                window,
-                                cx,
-                            );
+                            if let Some(project) = this.projects.get(this.selected_project).cloned()
+                            {
+                                this.edit_project(Some(project), window, cx);
+                            }
                         })),
                     )
                     .child(
-                        icon_button(
-                            "project-menu",
-                            IconName::Ellipsis,
-                            self.text(Text::MoreOptions),
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.navigate(Page::Settings, window, cx);
-                        })),
+                        icon_button("project-menu", IconName::Layers, self.text(Text::Context))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_context(window, cx);
+                            })),
                     ),
             )
     }

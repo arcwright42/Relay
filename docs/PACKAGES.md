@@ -7,17 +7,19 @@
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`gpui-kit` |
-| `relay-ui` | 工作台、输入状态、导航、中英文文案与原生菜单、视觉资源引用与示例数据 | `relay-core`、`gpui-kit` |
-| `relay-core` | 项目标识、上下文类型、领域数据、AgentService 与 SettingsService 接口 | 无 |
-| `relay-runtime` | 安装来源、版本校验、项目会话状态、可见对话与应用偏好持久化 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2` |
+| `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
+| `relay-core` | 项目、资料、对话诊断、AgentService / ProjectService / SettingsService 接口 | 无 |
+| `relay-runtime` | 安装、项目存储、确定性上下文快照与增量、会话恢复、对话诊断与应用偏好持久化 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2` |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
 | `xtask` | 包边界检查、质量检查、图标生成与本地 macOS 打包 | `serde_json` |
 
 `relay-ui` 内按工作台状态、导航、对话输入、辅助页面和开发工具组织模块。`devtools` feature 默认从应用入口开启，统一启用 GPUI 检查器与 Relay 右键入口；关闭默认 feature 可以剔除这些开发入口。
 
-运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口将实现了 `AgentService` 的 runtime 注入 UI；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。示例资料只放在 `relay-ui::preview`，不会进入真实 prompt。
+运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口注入 AgentService、ProjectService 和 SettingsService；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。项目预览资料已移除。
 
-当前简单的对话存储放在 `relay-runtime::store`。未来完整项目存储和 macOS 能力有具体实现时再拆分 `relay-storage`、`relay-platform`；接入前同时更新此文档与 `xtask` 的允许依赖图。
+当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。继续沿用现有 crate，未来数据库和 macOS 能力需要独立边界时再拆分；接入前同步允许依赖图。
+
+ACP SDK 仍固定 2.2.0，仅显式开启 `unstable_end_turn_token_usage` 来读取可选用量；不启用整个 unstable 集合，不升级 lockfile。缺失或损坏的可选 usage 不影响对话。测试专用 `relay-runtime/test-support` 只转发 `relay-acp/test-support`，用内存传输验证快照交付、写入顺序与失败恢复；产品默认构建不含测试传输。
 
 应用偏好通过独立的 `SettingsService` 注入 UI，由 `relay-runtime::settings` 保存到应用级 `settings.json`。切换语言先更新内存，单个后台写入线程合并并按顺序保存，使用临时文件、sync 与原子替换；损坏或不支持的文件保留原样并显示错误。UI 的编译期文案表要求每项同时有中英文，不新增依赖。语言切换同步组件及原生菜单，不发送 Agent 命令，不改项目对话、草稿或 ACP 配置 ID。
 
@@ -42,7 +44,7 @@ cargo xtask verify
 
 `check-packages` 读取 Cargo 的解析结果，检查允许依赖方向、精确版本、禁止 Git 分支、统一包版本和禁止发布；同时检查托管 npm 清单、override、lockfile 的一致性，每个下载包必须固定版本、来自指定 registry 并带 SHA-512 integrity。规则包含反向依赖、浮动版本和缺失校验值的回归测试。
 
-`verify` 依次执行包边界检查、格式检查、workspace 全目标全 feature Clippy（警告作为错误）与全 feature 测试。`relay-acp/test-support` 仅启用测试 ACP 子进程，覆盖登录、模型、权限、取消、恢复去重和进程退出；不会打进应用包。UI 的开发依赖额外启用 GPUI Kit 的 `test-support`，用真实鼠标事件覆盖 Inspector 关闭与普通点击恢复。测试不需要网络、真实账号或模型费用。GitHub Actions 的 macOS 工作流运行同一条命令；CI 依赖的 Actions 固定到提交 SHA。
+`verify` 依次执行包边界检查、格式检查、workspace 全目标全 feature Clippy（警告作为错误）与全 feature 测试。`relay-acp/test-support` 启用测试 ACP 子进程及内存命令传输，覆盖登录、模型、权限、取消、恢复去重、用量和进程退出；不会打进应用包。UI 的开发依赖额外启用 GPUI Kit 的 `test-support`，用真实鼠标/键盘事件覆盖项目与资料表单、资料选择，以及 Inspector 关闭与普通点击恢复。测试不需要网络、真实账号或模型费用。GitHub Actions 的 macOS 工作流运行同一条命令；CI 依赖的 Actions 固定到提交 SHA。
 
 ## 外部运行组件
 

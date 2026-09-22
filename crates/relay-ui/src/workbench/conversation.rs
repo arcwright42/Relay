@@ -37,7 +37,7 @@ impl Workbench {
                                     .rounded(px(18.))
                                     .bg(rgb(0xf4f4f5))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_context(None, window, cx)
+                                        this.show_context(window, cx)
                                     })),
                             )
                             .child(
@@ -76,7 +76,7 @@ impl Workbench {
                                     .text_size(px(12.))
                                     .text_color(rgb(0x7c7c82))
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_context(None, window, cx)
+                                        this.show_context(window, cx)
                                     })),
                             ),
                     )
@@ -210,7 +210,42 @@ impl Workbench {
                                     )
                                     .when(message.status == MessageStatus::Interrupted, |view| {
                                         view.child(
-                                            muted(self.text(Text::Interrupted)).text_size(px(11.)),
+                                            muted(
+                                                self.text(
+                                                    match message
+                                                        .metrics
+                                                        .as_ref()
+                                                        .and_then(|metrics| metrics.outcome)
+                                                    {
+                                                        Some(TurnOutcome::Cancelled) => {
+                                                            Text::ResponseCancelled
+                                                        }
+                                                        Some(TurnOutcome::Refused) => {
+                                                            Text::ResponseRefused
+                                                        }
+                                                        Some(TurnOutcome::Failed) => {
+                                                            Text::ResponseFailed
+                                                        }
+                                                        _ => Text::Interrupted,
+                                                    },
+                                                ),
+                                            )
+                                            .text_size(px(11.)),
+                                        )
+                                    })
+                                    .when(message.metrics.is_some(), |view| {
+                                        let id = message.id;
+                                        view.child(
+                                            Button::new(("turn-diagnostics", id))
+                                                .ghost()
+                                                .small()
+                                                .label(self.text(Text::ResponseDetails))
+                                                .text_color(rgb(MUTED))
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.show_diagnostics(id, window, cx)
+                                                    },
+                                                )),
                                         )
                                     })
                             })),

@@ -17,6 +17,10 @@ pub struct SavedProject {
     pub session_id: Option<String>,
     pub session_key: Option<String>,
     #[serde(default)]
+    pub context_checkpoint: crate::context::Checkpoint,
+    #[serde(default)]
+    pub restore_history: bool,
+    #[serde(default)]
     pub preferences: BTreeMap<String, String>,
     #[serde(default)]
     pub messages: Vec<SavedMessage>,
@@ -33,6 +37,8 @@ pub struct SavedMessage {
     pub complete: bool,
     #[serde(default)]
     pub tools: Vec<SavedTool>,
+    #[serde(default)]
+    pub metrics: Option<crate::metrics::SavedMetrics>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,6 +59,7 @@ impl SavedMessage {
             .into(),
             text: message.text.clone(),
             complete: message.status == MessageStatus::Complete,
+            metrics: message.metrics.as_ref().map(Into::into),
             tools: message
                 .tools
                 .iter()
@@ -78,6 +85,7 @@ impl SavedMessage {
             } else {
                 MessageStatus::Interrupted
             },
+            metrics: self.metrics.map(Into::into),
             tools: self
                 .tools
                 .into_iter()
@@ -96,7 +104,7 @@ pub fn load(root: &Path, project: ProjectId) -> Result<SavedProject> {
         .join("projects")
         .join(project.0.to_string())
         .join("conversation.json");
-    if !path.exists() {
+    if !path.try_exists()? {
         return Ok(SavedProject {
             version: 1,
             ..Default::default()
@@ -105,28 +113,47 @@ pub fn load(root: &Path, project: ProjectId) -> Result<SavedProject> {
     let bytes = fs::read(path)?;
     let saved: SavedProject =
         serde_json::from_slice(&bytes).context("Reading project conversation")?;
-    if saved.version != 1 {
+    if !matches!(saved.version, 1 | 2) {
         bail!("This project was saved by a newer Relay version.");
+    }
+    if saved
+        .context_checkpoint
+        .acknowledged
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.project_id != project.0)
+    {
+        bail!("Conversation context belongs to another project. The file has been preserved.");
     }
     Ok(saved)
 }
 
 pub fn save(root: &Path, project: ProjectId, saved: &SavedProject) -> Result<()> {
     let directory = root.join("projects").join(project.0.to_string());
-    fs::create_dir_all(&directory)?;
-    let temporary = directory.join("conversation.json.pending");
-    let mut options = fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    write_json(&directory.join("conversation.json"), saved)
+}
+
+pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    let directory = path.parent().context("Missing storage directory")?;
+    fs::create_dir_all(directory)?;
+    let temporary = directory.join(format!(".relay-{}.pending", crate::installer::unique_id()));
+    let result = (|| -> Result<()> {
+        let mut options = fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary)?;
+        file.write_all(&serde_json::to_vec_pretty(value)?)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
     }
-    let mut file = options.open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(saved)?)?;
-    file.sync_all()?;
-    fs::rename(temporary, directory.join("conversation.json"))?;
-    Ok(())
+    result
 }
 
 #[cfg(test)]
@@ -140,6 +167,7 @@ mod tests {
             text: "Partial response".into(),
             status: MessageStatus::Streaming,
             tools: vec![],
+            metrics: None,
         };
         let saved = SavedMessage::from_message(&message);
         let json = serde_json::to_string(&saved).unwrap();

@@ -110,6 +110,58 @@ pub struct ChatMessage {
     pub text: String,
     pub status: MessageStatus,
     pub tools: Vec<ToolActivity>,
+    pub metrics: Option<TurnMetrics>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ContextDeliveryKind {
+    #[default]
+    Unchanged,
+    Snapshot,
+    Delta,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Complete,
+    Cancelled,
+    Refused,
+    Failed,
+}
+
+/// Codex ACP 1.12 reports the last model request, not every request in a tool-using turn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_read_tokens: Option<u64>,
+    pub cached_write_tokens: Option<u64>,
+    pub thought_tokens: Option<u64>,
+}
+
+impl TokenUsage {
+    /// The pinned Codex adapter reports input excluding cached reads/writes.
+    pub fn cache_read_ratio(&self) -> Option<f64> {
+        let read = self.cached_read_tokens?;
+        let total = self
+            .input_tokens
+            .checked_add(read)?
+            .checked_add(self.cached_write_tokens.unwrap_or(0))?;
+        (total > 0).then_some(read as f64 / total as f64)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnMetrics {
+    pub model: Option<String>,
+    pub first_text_ms: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub context_kind: ContextDeliveryKind,
+    pub context_revision: Option<u64>,
+    pub context_bytes: usize,
+    pub restored_history: bool,
+    pub usage: Option<TokenUsage>,
+    pub outcome: Option<TurnOutcome>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,4 +222,28 @@ pub trait AgentService: Send + Sync {
     fn revision(&self) -> u64;
     fn snapshot(&self, project: ProjectId) -> AgentSnapshot;
     fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_cache_usage_is_distinct_from_a_measured_zero() {
+        let mut usage = TokenUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cached_read_tokens: None,
+            cached_write_tokens: None,
+            thought_tokens: None,
+        };
+        assert_eq!(usage.cache_read_ratio(), None);
+        usage.cached_read_tokens = Some(0);
+        assert_eq!(usage.cache_read_ratio(), Some(0.));
+        usage.cached_read_tokens = Some(900);
+        assert_eq!(usage.cache_read_ratio(), Some(0.9));
+        usage.cached_write_tokens = Some(1_000);
+        assert_eq!(usage.cache_read_ratio(), Some(0.45));
+        usage.input_tokens = u64::MAX;
+        assert_eq!(usage.cache_read_ratio(), None);
+    }
 }

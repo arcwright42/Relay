@@ -1,5 +1,6 @@
 #![cfg(feature = "test-support")]
 use relay_acp::{Command, ConnectionHandle, Event, LaunchSpec, SessionOptions};
+use relay_core::agents::TurnOutcome;
 use std::{
     collections::BTreeMap,
     sync::{Arc, mpsc},
@@ -158,7 +159,13 @@ fn permissions_wait_for_the_user_and_preserve_their_choice() {
     };
     assert!(result.contains("no"));
     wait(&events, |e| {
-        matches!(e, Event::TurnEnded { cancelled: false })
+        matches!(
+            e,
+            Event::TurnEnded {
+                outcome: TurnOutcome::Complete,
+                ..
+            }
+        )
     });
 }
 
@@ -175,7 +182,13 @@ fn cancellation_is_processed_while_prompt_is_in_flight() {
     wait(&events, |e| matches!(e, Event::Text(_)));
     connection.send(Command::Cancel).unwrap();
     wait(&events, |e| {
-        matches!(e, Event::TurnEnded { cancelled: true })
+        matches!(
+            e,
+            Event::TurnEnded {
+                outcome: TurnOutcome::Cancelled,
+                ..
+            }
+        )
     });
 }
 
@@ -247,7 +260,13 @@ fn cancelling_a_turn_dismisses_a_pending_permission() {
     wait(&events, |e| matches!(e, Event::Permission(_)));
     connection.send(Command::Cancel).unwrap();
     wait(&events, |e| {
-        matches!(e, Event::TurnEnded { cancelled: true })
+        matches!(
+            e,
+            Event::TurnEnded {
+                outcome: TurnOutcome::Cancelled,
+                ..
+            }
+        )
     });
     connection
         .send(Command::Prompt {
@@ -256,6 +275,76 @@ fn cancelling_a_turn_dismisses_a_pending_permission() {
         })
         .unwrap();
     wait(&events, |e| {
-        matches!(e, Event::TurnEnded { cancelled: false })
+        matches!(
+            e,
+            Event::TurnEnded {
+                outcome: TurnOutcome::Complete,
+                ..
+            }
+        )
     });
+}
+
+#[test]
+fn project_context_precedes_new_message_and_cache_usage_is_preserved() {
+    let (connection, events) = fixture(None);
+    wait(&events, |e| matches!(e, Event::Ready { .. }));
+    connection
+        .send(Command::Prompt {
+            text: "echo-context".into(),
+            context: Some("Stable project context\n资料".into()),
+        })
+        .unwrap();
+    let Event::Text(text) = wait(&events, |e| matches!(e, Event::Text(_))) else {
+        unreachable!()
+    };
+    let prompt: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(prompt[0]["text"], "Stable project context\n资料");
+    assert_eq!(prompt[1]["text"], "echo-context");
+    let Event::TurnEnded { outcome, usage } =
+        wait(&events, |e| matches!(e, Event::TurnEnded { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!(outcome, TurnOutcome::Complete);
+    let usage = usage.unwrap();
+    assert_eq!(usage.input_tokens, 100);
+    assert_eq!(usage.cached_read_tokens, Some(900));
+    assert_eq!(usage.cached_write_tokens, None);
+    assert_eq!(usage.cache_read_ratio(), Some(0.9));
+}
+
+#[test]
+fn refusal_is_distinct_and_malformed_optional_usage_does_not_break_a_turn() {
+    let (connection, events) = fixture(None);
+    wait(&events, |e| matches!(e, Event::Ready { .. }));
+    connection
+        .send(Command::Prompt {
+            text: "refuse".into(),
+            context: None,
+        })
+        .unwrap();
+    assert!(matches!(
+        wait(&events, |e| matches!(e, Event::TurnEnded { .. })),
+        Event::TurnEnded {
+            outcome: TurnOutcome::Refused,
+            usage: None
+        }
+    ));
+    connection
+        .send(Command::Prompt {
+            text: "bad-usage".into(),
+            context: None,
+        })
+        .unwrap();
+    assert!(
+        matches!(wait(&events, |e| matches!(e, Event::Text(_))), Event::Text(text) if text == "Still usable")
+    );
+    assert!(matches!(
+        wait(&events, |e| matches!(e, Event::TurnEnded { .. })),
+        Event::TurnEnded {
+            outcome: TurnOutcome::Complete,
+            usage: None
+        }
+    ));
 }

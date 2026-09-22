@@ -11,7 +11,7 @@ rust-version = "1.97"
 publish = false
 
 [workspace.dependencies]
-agent-client-protocol = "=2.2.0"
+agent-client-protocol = { version = "=2.2.0", features = ["unstable_end_turn_token_usage"] }
 anyhow = "=1.0.104"
 async-channel = "=2.5.0"
 async-io = "=2.6.0"

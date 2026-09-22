@@ -1,10 +1,11 @@
 //! Opt-in end-to-end check; installs managed components and connects to Codex.
 //! No inference request is sent unless --prompt is supplied.
 use relay_core::{
-    ProjectId,
     agents::{AgentCommand, AgentService, AgentSource, ConnectionStatus, MessageRole},
+    projects::ProjectService,
 };
-use relay_runtime::AgentRuntime;
+use relay_runtime::{AgentRuntime, ProjectStore};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn main() -> Result<(), String> {
@@ -14,8 +15,15 @@ fn main() -> Result<(), String> {
         .position(|a| a == "--prompt")
         .and_then(|i| args.get(i + 1))
         .cloned();
-    let id = ProjectId(9001);
-    let runtime = AgentRuntime::new(AgentRuntime::default_directory(), [id]);
+    let root = AgentRuntime::default_directory().join("probes/codex");
+    let projects = Arc::new(ProjectStore::new(root.clone()));
+    let id = projects
+        .snapshot()
+        .projects
+        .first()
+        .ok_or("Probe project unavailable")?
+        .id;
+    let runtime = AgentRuntime::new(root, projects);
     runtime.dispatch(id, AgentCommand::Connect(AgentSource::Managed))?;
     let started = Instant::now();
     let mut previous = String::new();

@@ -4,7 +4,9 @@ mod mapping;
 use agent_client_protocol::schema::{ProtocolVersion, v1 as acp};
 use agent_client_protocol::{AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo};
 use async_channel::{Receiver, Sender};
-use relay_core::agents::{AuthenticationMethod, PermissionRequest, SessionConfig, ToolActivity};
+use relay_core::agents::{
+    AuthenticationMethod, PermissionRequest, SessionConfig, TokenUsage, ToolActivity, TurnOutcome,
+};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -57,7 +59,8 @@ pub enum Event {
     Permission(PermissionRequest),
     PermissionResolved(u64),
     TurnEnded {
-        cancelled: bool,
+        outcome: TurnOutcome,
+        usage: Option<TokenUsage>,
     },
     Error {
         message: String,
@@ -138,6 +141,21 @@ pub fn connect(
 }
 
 type PendingPermissions = Arc<Mutex<BTreeMap<u64, Sender<Option<String>>>>>;
+
+/// Test-only transport used to exercise runtime delivery without installing an agent.
+#[cfg(feature = "test-support")]
+pub fn test_connection() -> (ConnectionHandle, Receiver<Command>) {
+    let (commands, receiver) = async_channel::unbounded();
+    let (stop, _) = async_channel::bounded(1);
+    (
+        ConnectionHandle {
+            commands,
+            stop,
+            worker: None,
+        },
+        receiver,
+    )
+}
 
 async fn run(
     spec: LaunchSpec,
@@ -253,8 +271,15 @@ async fn run(
                             running.store(false, Ordering::Release);
                             cancel_permissions(&pending);
                             match result {
-                                Ok(response) => sink(Event::TurnEnded { cancelled: response.stop_reason == acp::StopReason::Cancelled }),
-                                Err(error) => { sink(Event::Error { message: error.to_string(), fatal: false }); sink(Event::TurnEnded { cancelled: true }); }
+                                Ok(response) => sink(Event::TurnEnded {
+                                    outcome: match response.stop_reason {
+                                        acp::StopReason::Cancelled => TurnOutcome::Cancelled,
+                                        acp::StopReason::Refusal => TurnOutcome::Refused,
+                                        _ => TurnOutcome::Complete,
+                                    },
+                                    usage: response.usage.map(mapping::usage),
+                                }),
+                                Err(error) => { sink(Event::Error { message: error.to_string(), fatal: false }); sink(Event::TurnEnded { outcome: TurnOutcome::Failed, usage: None }); }
                             }
                             Ok(())
                         })?;

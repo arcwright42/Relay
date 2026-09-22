@@ -70,6 +70,21 @@ fn main() {
                     .as_str()
                     .unwrap();
                 match text {
+                    "echo-context" => {
+                        chunk(&request["params"]["prompt"].to_string());
+                        reply(
+                            id,
+                            json!({"stopReason":"end_turn","usage":{"totalTokens":1020,"inputTokens":100,"outputTokens":20,"cachedReadTokens":900,"thoughtTokens":10}}),
+                        );
+                    }
+                    "refuse" => reply(id, json!({"stopReason":"refusal"})),
+                    "bad-usage" => {
+                        chunk("Still usable");
+                        reply(
+                            id,
+                            json!({"stopReason":"end_turn","usage":{"inputTokens":"invalid"}}),
+                        );
+                    }
                     "exit" => std::process::exit(0),
                     "permission" => {
                         pending = Some(id);

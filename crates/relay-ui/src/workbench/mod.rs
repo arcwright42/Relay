@@ -1,7 +1,9 @@
 mod agents;
 mod conversation;
+mod diagnostics;
 mod navigation;
 mod pages;
+mod projects;
 #[cfg(test)]
 mod tests;
 
@@ -15,11 +17,12 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     i18n::{Text, Translate},
-    preview::{Page, preview_projects},
+    preview::Page,
 };
 use relay_core::{
-    ContextKind, Project,
+    Project,
     agents::*,
+    projects::{ProjectCommand, ProjectService},
     settings::{Language, SettingsService, SettingsSnapshot},
 };
 use std::{sync::Arc, time::Duration};
@@ -81,6 +84,10 @@ fn explain(
 }
 
 pub struct Workbench {
+    project_service: Arc<dyn ProjectService>,
+    project_revision: u64,
+    project_error: Option<String>,
+    project_saving: bool,
     settings_service: Arc<dyn SettingsService>,
     settings_snapshot: SettingsSnapshot,
     page: Page,
@@ -103,12 +110,14 @@ impl Workbench {
     pub fn new(
         agent_service: Arc<dyn AgentService>,
         settings_service: Arc<dyn SettingsService>,
+        project_service: Arc<dyn ProjectService>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let settings_snapshot = settings_service.snapshot();
         let language = settings_snapshot.language;
-        let projects = preview_projects(language);
+        let catalog = project_service.snapshot();
+        let projects = catalog.projects;
         let drafts: Vec<_> = projects
             .iter()
             .map(|_| {
@@ -138,11 +147,12 @@ impl Workbench {
             .collect();
         let agent_revision = agent_service.revision();
         let executor = cx.background_executor().clone();
-        let updates = cx.spawn(async move |this, cx| {
+        let updates = cx.spawn_in(window, async move |this, cx| {
             loop {
                 executor.timer(Duration::from_millis(100)).await;
                 if this
-                    .update(cx, |this, cx| {
+                    .update_in(cx, |this, window, cx| {
+                        this.refresh_projects(window, cx);
                         this.refresh_agents(cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
@@ -157,9 +167,17 @@ impl Workbench {
             }
         });
         Self {
+            project_service,
+            project_revision: catalog.revision,
+            project_error: catalog.error,
+            project_saving: false,
             settings_service,
             settings_snapshot,
-            page: Page::Project(0),
+            page: if projects.is_empty() {
+                Page::Home
+            } else {
+                Page::Project(0)
+            },
             selected_project: 0,
             agent_errors: vec![None; projects.len()],
             projects,
@@ -184,8 +202,7 @@ impl Workbench {
         self.settings_service.set_language(language);
         self.settings_snapshot = self.settings_service.snapshot();
         crate::apply_language(language, cx);
-        // Only design fixtures change; IDs, conversations, drafts and agent connections stay intact.
-        self.projects = preview_projects(language);
+        // User-owned project names, notes and protocol inputs never change with UI language.
         self.search.update(cx, |search, cx| {
             search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
         });
@@ -203,16 +220,24 @@ impl Workbench {
             self.selected_project = index;
         }
         self.page = page;
-        window.focus(&self.focus, cx);
+        if window.root::<Root>().flatten().is_none() || !window.has_active_dialog(cx) {
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
     }
 
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
+            return;
+        }
         self.search
             .update(cx, |search, cx| search.focus(window, cx));
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
+        if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
+            return;
+        }
         if !matches!(self.page, Page::Project(_))
             || self.drafts[self.selected_project]
                 .read(cx)
@@ -247,55 +272,6 @@ impl Workbench {
         });
         cx.notify();
     }
-
-    fn show_context(&self, kind: Option<ContextKind>, window: &mut Window, cx: &mut Context<Self>) {
-        let language = self.settings_snapshot.language;
-        let project = &self.projects[self.selected_project];
-        let items: Vec<_> = project
-            .context
-            .iter()
-            .filter(|item| kind.is_none_or(|kind| kind == item.kind))
-            .cloned()
-            .collect();
-        let title: SharedString = match kind {
-            Some(kind) => format!(
-                "{} · {}",
-                project.name.clone(),
-                context_label(kind, language)
-            )
-            .into(),
-            None => format!("{} · {}", project.name, self.text(Text::Context)).into(),
-        };
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(title.clone()).width(px(480.)).child(
-                column()
-                    .gap(px(12.))
-                    .child(muted(language.text(Text::ContextIndependent)).text_size(px(13.)))
-                    .child(
-                        column()
-                            .id("context-preview-list")
-                            .max_h(px(360.))
-                            .overflow_y_scroll()
-                            .gap(px(4.))
-                            .children(items.iter().map(|item| {
-                                row()
-                                    .gap(px(12.))
-                                    .py(px(9.))
-                                    .child(icon(context_icon(item.kind)))
-                                    .child(item.name.clone())
-                            }))
-                            .when(items.is_empty(), |this| {
-                                this.child(muted(language.text(Text::NoContext)).py(px(20.)))
-                            }),
-                    )
-                    .child(
-                        muted(language.text(Text::SampleLibrary))
-                            .text_size(px(12.))
-                            .pt(px(8.)),
-                    ),
-            )
-        });
-    }
 }
 
 fn project_icon(index: usize) -> IconName {
@@ -303,14 +279,6 @@ fn project_icon(index: usize) -> IconName {
         1 => IconName::Cpu,
         2 => IconName::BriefcaseBusiness,
         _ => IconName::FolderClosed,
-    }
-}
-
-fn context_icon(kind: ContextKind) -> IconName {
-    match kind {
-        ContextKind::Web => IconName::PanelsTopLeft,
-        ContextKind::Document => IconName::FileText,
-        ContextKind::Image => IconName::Image,
     }
 }
 
@@ -326,7 +294,8 @@ impl Render for Workbench {
                 }
             }
             Page::Home => self.home(cx),
-            Page::Agents => self.agents(cx),
+            Page::Agents if !self.projects.is_empty() => self.agents(cx),
+            Page::Agents => self.home(cx),
             Page::Settings => self.settings(cx),
             Page::Inbox => column()
                 .flex_1()
@@ -383,12 +352,4 @@ impl Render for Workbench {
                 view
             })
     }
-}
-
-fn context_label(kind: ContextKind, language: Language) -> &'static str {
-    language.text(match kind {
-        ContextKind::Web => Text::WebPages,
-        ContextKind::Document => Text::Documents,
-        ContextKind::Image => Text::Images,
-    })
 }
