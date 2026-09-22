@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::{agent_text, choice_name, config_name, status_text};
 use gpui_kit::component::popover::Popover;
 
 impl Workbench {
@@ -54,7 +55,7 @@ impl Workbench {
                     .child(icon(IconName::ChevronDown).size(px(12.)))
                     .text_size(px(12.))
                     .text_color(rgb(0x696970))
-                    .accessibility_label(format!("Choose harness and model: {label}")),
+                    .accessibility_label(format!("{}: {label}", self.text(Text::ChooseHarness))),
             )
             .content(move |_, _, cx| {
                 weak.update(cx, |this, cx| this.agent_menu(cx))
@@ -63,6 +64,7 @@ impl Workbench {
     }
 
     fn agent_menu(&self, cx: &mut Context<Self>) -> Div {
+        let language = self.settings_snapshot.language;
         let state = &self.agent_states[self.selected_project];
         let ready = state.status == ConnectionStatus::Ready && state.pending_config.is_none();
         let mut configs: Vec<_> = state.configs.iter().collect();
@@ -71,7 +73,12 @@ impl Workbench {
             .w(px(350.))
             .gap(px(8.))
             .p(px(8.))
-            .child(muted("HARNESS").text_size(px(10.)).px(px(8.)).pt(px(4.)))
+            .child(
+                muted(self.text(Text::Harness))
+                    .text_size(px(10.))
+                    .px(px(8.))
+                    .pt(px(4.)),
+            )
             .child(
                 row()
                     .gap(px(12.))
@@ -86,8 +93,8 @@ impl Workbench {
                             .child(div().font_weight(FontWeight::MEDIUM).child("Codex"))
                             .child(
                                 muted(match state.source {
-                                    AgentSource::Managed => "Managed by Relay",
-                                    AgentSource::Local(_) => "Local installation",
+                                    AgentSource::Managed => self.text(Text::Managed),
+                                    AgentSource::Local(_) => self.text(Text::LocalInstall),
                                 })
                                 .text_size(px(11.)),
                             ),
@@ -95,7 +102,7 @@ impl Workbench {
                     .child(icon(IconName::Check).size(px(16.))),
             )
             .child(
-                muted(state.status.label().to_owned())
+                muted(status_text(language, &state.status).to_owned())
                     .text_size(px(12.))
                     .px(px(8.)),
             )
@@ -120,7 +127,7 @@ impl Workbench {
                     view.child(
                         Button::new("picker-cancel-setup")
                             .ghost()
-                            .label("Cancel setup")
+                            .label(self.text(Text::CancelSetup))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.agent_action(AgentCommand::Disconnect, cx);
                             })),
@@ -142,7 +149,7 @@ impl Workbench {
                                     .gap(px(3.))
                                     .pt(px(8.))
                                     .child(
-                                        muted(config.name.clone())
+                                        muted(config_name(language, config).to_owned())
                                             .text_size(px(11.))
                                             .px(px(8.))
                                             .pb(px(4.)),
@@ -167,10 +174,13 @@ impl Workbench {
                                             .disabled(!ready)
                                             .accessibility_label(format!(
                                                 "{}: {}",
-                                                config.name, choice.name
+                                                config_name(language, config),
+                                                choice_name(language, config, choice)
                                             ))
                                             .when_some(
-                                                choice.description.clone(),
+                                                choice.description.as_ref().map(|description| {
+                                                    agent_text(language, description).to_owned()
+                                                }),
                                                 |button, description| button.tooltip(description),
                                             )
                                             .when(selected, |button| button.bg(rgb(0xf1f1f3)))
@@ -179,10 +189,10 @@ impl Workbench {
                                                     .w_full()
                                                     .gap(px(8.))
                                                     .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .text_size(px(13.))
-                                                            .child(choice.name.clone()),
+                                                        div().flex_1().text_size(px(13.)).child(
+                                                            choice_name(language, config, choice)
+                                                                .to_owned(),
+                                                        ),
                                                     )
                                                     .when(selected, |view| {
                                                         view.child(
@@ -212,7 +222,7 @@ impl Workbench {
                         state.status == ConnectionStatus::Ready && state.model().is_none(),
                         |view| {
                             view.child(
-                                muted("Model selection is managed by this Codex version.")
+                                muted(self.text(Text::ModelManaged))
                                     .text_size(px(12.))
                                     .p(px(8.)),
                             )
@@ -226,7 +236,7 @@ impl Workbench {
                         .w_full()
                         .justify_start()
                         .icon(icon(IconName::Settings).size(px(15.)))
-                        .label("Manage agents")
+                        .label(self.text(Text::ManageAgents))
                         .text_size(px(12.))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.navigate(Page::Agents, window, cx)
@@ -241,9 +251,9 @@ impl Workbench {
         Button::new(id)
             .primary()
             .label(if state.installed {
-                "Connect Codex"
+                self.text(Text::ConnectCodex)
             } else {
-                "Set up Codex"
+                self.text(Text::SetupCodex)
             })
             .rounded(px(9.))
             .disabled(state.status.is_busy())
@@ -261,13 +271,16 @@ impl Workbench {
                 let id = method.id.clone();
                 Button::new(("authenticate", index))
                     .outline()
-                    .label(if id == "api-key" {
-                        "API Key (from environment)".to_owned()
-                    } else {
-                        method.name.clone()
+                    .label(match id.as_str() {
+                        "api-key" => self.text(Text::ApiKey).to_owned(),
+                        "chat-gpt" => self.text(Text::ChatgptLogin).to_owned(),
+                        "chat-gpt-device-code" => self.text(Text::ChatgptDevice).to_owned(),
+                        _ => method.name.clone(),
                     })
                     .when_some(method.description.clone(), |button, description| {
-                        button.tooltip(description)
+                        button.tooltip(
+                            agent_text(self.settings_snapshot.language, &description).to_owned(),
+                        )
                     })
                     .rounded(px(8.))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -298,6 +311,7 @@ impl Workbench {
                             .bg(rgb(0xfff4ed))
                             .text_color(rgb(0x9a542a))
                             .text_size(px(12.))
+                            .child(div().mb(px(5.)).child(self.text(Text::AgentError)))
                             .child(error.clone()),
                     )
                 },
@@ -324,9 +338,15 @@ impl Workbench {
                                 0x9b9ba2
                             },
                         )))
-                        .child(muted(state.status.label().to_owned()).text_size(px(11.)))
+                        .child(
+                            muted(
+                                status_text(self.settings_snapshot.language, &state.status)
+                                    .to_owned(),
+                            )
+                            .text_size(px(11.)),
+                        )
                         .when(state.pending_config.is_some(), |view| {
-                            view.child(muted("· Applying selection…").text_size(px(11.)))
+                            view.child(muted(self.text(Text::ApplyingSelection)).text_size(px(11.)))
                         }),
                 )
             })
@@ -345,7 +365,7 @@ impl Workbench {
                         .border_1()
                         .border_color(rgb(0xe2d6bc))
                         .bg(rgb(0xfffcf5))
-                        .child(muted("Codex needs your approval").text_size(px(11.)))
+                        .child(muted(self.text(Text::ApprovalNeeded)).text_size(px(11.)))
                         .child(
                             div()
                                 .font_weight(FontWeight::MEDIUM)
@@ -377,7 +397,13 @@ impl Workbench {
                                         ))
                                         .outline()
                                         .small()
-                                        .label(choice.name.clone())
+                                        .label(
+                                            agent_text(
+                                                self.settings_snapshot.language,
+                                                &choice.name,
+                                            )
+                                            .to_owned(),
+                                        )
                                         .when(choice.allows, |button| button.primary())
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
@@ -407,39 +433,217 @@ impl Workbench {
                 | ConnectionStatus::NeedsAuthentication
                 | ConnectionStatus::Authenticating
         );
-        column().flex_1().min_h_0().child(column().id("agent-settings-scroll").flex_1().min_h_0().overflow_y_scroll().px(px(55.)).py(px(34.)).gap(px(22.))
-            .child(div().text_size(px(30.)).font_weight(FontWeight::SEMIBOLD).child("Your agents, one workspace."))
-            .child(muted(format!("Connect an agent for {}.", self.projects[self.selected_project].name)).text_size(px(16.)))
-            .child(column().w_full().max_w(px(790.)).p(px(24.)).gap(px(20.)).rounded(px(16.)).border_1().border_color(rgb(LINE))
-                .child(row().gap(px(15.)).child(row().justify_center().size(px(44.)).rounded(px(12.)).bg(rgb(0xf0f0f2)).child(icon(IconName::Sparkles).size(px(23.))))
-                    .child(column().flex_1().gap(px(5.)).child(div().text_size(px(19.)).font_weight(FontWeight::SEMIBOLD).child("Codex"))
-                        .child(muted("Run locally. Keep your project in Relay.").text_size(px(12.))))
-                    .when(!connected, |view| view.child(self.connect_button("setup-codex", cx)))
-                    .when(connected || state.status.is_busy(), |view| view.child(Button::new("disconnect-agent").outline().label("Disconnect").on_click(cx.listener(|this, _, _, cx| { this.agent_action(AgentCommand::Disconnect, cx); })))))
-                .child(self.connection_notice(cx))
-                .child(column().gap(px(10.)).child(muted("Installation").text_size(px(11.)))
-                    .child(row().gap(px(10.)).flex_wrap()
-                        .child(Button::new("use-managed-codex").outline().label("Managed by Relay").disabled(state.status.is_busy())
-                            .when(state.source == AgentSource::Managed, |button| button.bg(rgb(0xededf0)))
-                            .on_click(cx.listener(|this, _, _, cx| { this.agent_action(AgentCommand::Connect(AgentSource::Managed), cx); })))
-                        .child(Button::new("choose-local-codex").ghost().label("Use local version…").disabled(state.status.is_busy()).on_click(cx.listener(|this, _, _, cx| this.choose_agent_path(false, cx))))
-                        .child(Button::new("scan-local-codex").ghost().label(if state.discovering { "Scanning…" } else { "Scan local installs" }).disabled(state.discovering).on_click(cx.listener(|this, _, _, cx| { this.agent_action(AgentCommand::DiscoverLocal, cx); }))))
-                    .child(muted(match &state.source { AgentSource::Managed => "Relay prepares a tested Codex version and its runtime on first use.".to_owned(), AgentSource::Local(path) => path.display().to_string() }).text_size(px(12.)))
-                    .when_some(state.runtime_version.clone(), |view, version| view.child(muted(version).text_size(px(11.))))
-                    .children(state.local_installations.iter().enumerate().map(|(index, path)| {
-                        let path = path.clone();
-                        Button::new(("local-codex-installation", index)).ghost().justify_start().label(path.display().to_string()).text_size(px(12.)).disabled(state.status.is_busy())
-                            .on_click(cx.listener(move |this, _, _, cx| { this.agent_action(AgentCommand::Connect(AgentSource::Local(path.clone())), cx); }))
-                    })))
-                .child(column().gap(px(8.)).pt(px(16.)).border_t_1().border_color(rgb(LINE))
-                    .child(row().justify_between().child(div().text_size(px(13.)).child("Project working folder"))
-                        .child(Button::new("choose-working-folder").ghost().small().label("Choose folder…").disabled(state.status.is_busy()).on_click(cx.listener(|this, _, _, cx| this.choose_agent_path(true, cx)))))
-                    .child(muted(state.working_directory.display().to_string()).text_size(px(11.)))
-                    .child(muted("Codex works in this folder. Conversations remain part of the project.").text_size(px(12.))))
-                .when(state.status == ConnectionStatus::Ready, |view| view.child(row().justify_between().pt(px(12.)).border_t_1().border_color(rgb(LINE))
-                    .child(div().text_size(px(13.)).child("Harness & model"))
-                    .child(self.agent_picker(cx))))
-                .child(Button::new("back-to-project").ghost().label("Back to project").on_click(cx.listener(|this, _, window, cx| this.navigate(Page::Project(this.selected_project), window, cx))))))
+        column().flex_1().min_h_0().child(
+            column()
+                .id("agent-settings-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(55.))
+                .py(px(34.))
+                .gap(px(22.))
+                .child(
+                    div()
+                        .text_size(px(30.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(self.text(Text::AgentsTitle)),
+                )
+                .child(
+                    muted(
+                        self.text(Text::ConnectForProject)
+                            .replace("{project}", &self.projects[self.selected_project].name),
+                    )
+                    .text_size(px(16.)),
+                )
+                .child(
+                    column()
+                        .w_full()
+                        .max_w(px(790.))
+                        .p(px(24.))
+                        .gap(px(20.))
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .child(
+                            row()
+                                .gap(px(15.))
+                                .child(
+                                    row()
+                                        .justify_center()
+                                        .size(px(44.))
+                                        .rounded(px(12.))
+                                        .bg(rgb(0xf0f0f2))
+                                        .child(icon(IconName::Sparkles).size(px(23.))),
+                                )
+                                .child(
+                                    column()
+                                        .flex_1()
+                                        .gap(px(5.))
+                                        .child(
+                                            div()
+                                                .text_size(px(19.))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child("Codex"),
+                                        )
+                                        .child(
+                                            muted(self.text(Text::CodexDetail)).text_size(px(12.)),
+                                        ),
+                                )
+                                .when(!connected, |view| {
+                                    view.child(self.connect_button("setup-codex", cx))
+                                })
+                                .when(connected || state.status.is_busy(), |view| {
+                                    view.child(
+                                        Button::new("disconnect-agent")
+                                            .outline()
+                                            .label(self.text(Text::Disconnect))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.agent_action(AgentCommand::Disconnect, cx);
+                                            })),
+                                    )
+                                }),
+                        )
+                        .child(self.connection_notice(cx))
+                        .child(
+                            column()
+                                .gap(px(10.))
+                                .child(muted(self.text(Text::Installation)).text_size(px(11.)))
+                                .child(
+                                    row()
+                                        .gap(px(10.))
+                                        .flex_wrap()
+                                        .child(
+                                            Button::new("use-managed-codex")
+                                                .outline()
+                                                .label(self.text(Text::Managed))
+                                                .disabled(state.status.is_busy())
+                                                .when(
+                                                    state.source == AgentSource::Managed,
+                                                    |button| button.bg(rgb(0xededf0)),
+                                                )
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.agent_action(
+                                                        AgentCommand::Connect(AgentSource::Managed),
+                                                        cx,
+                                                    );
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("choose-local-codex")
+                                                .ghost()
+                                                .label(self.text(Text::UseLocal))
+                                                .disabled(state.status.is_busy())
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.choose_agent_path(false, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("scan-local-codex")
+                                                .ghost()
+                                                .label(if state.discovering {
+                                                    self.text(Text::Scanning)
+                                                } else {
+                                                    self.text(Text::ScanLocal)
+                                                })
+                                                .disabled(state.discovering)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.agent_action(
+                                                        AgentCommand::DiscoverLocal,
+                                                        cx,
+                                                    );
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    muted(match &state.source {
+                                        AgentSource::Managed => {
+                                            self.text(Text::ManagedDetail).to_owned()
+                                        }
+                                        AgentSource::Local(path) => path.display().to_string(),
+                                    })
+                                    .text_size(px(12.)),
+                                )
+                                .when_some(state.runtime_version.clone(), |view, version| {
+                                    view.child(muted(version).text_size(px(11.)))
+                                })
+                                .children(state.local_installations.iter().enumerate().map(
+                                    |(index, path)| {
+                                        let path = path.clone();
+                                        Button::new(("local-codex-installation", index))
+                                            .ghost()
+                                            .justify_start()
+                                            .label(path.display().to_string())
+                                            .text_size(px(12.))
+                                            .disabled(state.status.is_busy())
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.agent_action(
+                                                    AgentCommand::Connect(AgentSource::Local(
+                                                        path.clone(),
+                                                    )),
+                                                    cx,
+                                                );
+                                            }))
+                                    },
+                                )),
+                        )
+                        .child(
+                            column()
+                                .gap(px(8.))
+                                .pt(px(16.))
+                                .border_t_1()
+                                .border_color(rgb(LINE))
+                                .child(
+                                    row()
+                                        .justify_between()
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .child(self.text(Text::WorkingFolder)),
+                                        )
+                                        .child(
+                                            Button::new("choose-working-folder")
+                                                .ghost()
+                                                .small()
+                                                .label(self.text(Text::ChooseFolder))
+                                                .disabled(state.status.is_busy())
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.choose_agent_path(true, cx)
+                                                })),
+                                        ),
+                                )
+                                .child(
+                                    muted(state.working_directory.display().to_string())
+                                        .text_size(px(11.)),
+                                )
+                                .child(
+                                    muted(self.text(Text::WorkingFolderDetail)).text_size(px(12.)),
+                                ),
+                        )
+                        .when(state.status == ConnectionStatus::Ready, |view| {
+                            view.child(
+                                row()
+                                    .justify_between()
+                                    .pt(px(12.))
+                                    .border_t_1()
+                                    .border_color(rgb(LINE))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .child(self.text(Text::HarnessModel)),
+                                    )
+                                    .child(self.agent_picker(cx)),
+                            )
+                        })
+                        .child(
+                            Button::new("back-to-project")
+                                .ghost()
+                                .label(self.text(Text::BackToProject))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.navigate(Page::Project(this.selected_project), window, cx)
+                                })),
+                        ),
+                ),
+        )
     }
 
     fn choose_agent_path(&mut self, directory: bool, cx: &mut Context<Self>) {
@@ -450,9 +654,9 @@ impl Workbench {
             multiple: false,
             prompt: Some(
                 if directory {
-                    "Choose project working folder"
+                    self.text(Text::ChooseWorkingFolder)
                 } else {
-                    "Choose Codex executable"
+                    self.text(Text::ChooseCodexFile)
                 }
                 .into(),
             ),

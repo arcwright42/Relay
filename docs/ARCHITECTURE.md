@@ -54,6 +54,8 @@
 
 当前对话按项目使用有格式版本的 JSON 文件，以临时文件、sync 和 rename 替换保存；流式回复定期检查点，退出时刷新。无法读取的文件保留原样，阻止覆盖。完整项目资料库实现时再引入数据库和附件索引。Rust 核心与 UI 渲染解耦；系统能力未来通过 Rust 平台模块封装。
 
+界面语言属于应用级偏好，通过独立 `SettingsService` 接口由 runtime 持久化到 `settings.json`。默认简体中文，可在设置中即时切换 English；UI 文案表和组件 locale 负责显示，项目内容、Agent 连接及协议值不随语言变化。
+
 ## 3. ACP 接入
 
 ACP 定义客户端与 Agent 的双向请求和事件通知。Relay 实现客户端职责，优先以本地子进程和 stdio 建立连接。[ACP 协议概览](https://agentclientprotocol.com/protocol/v1/overview)

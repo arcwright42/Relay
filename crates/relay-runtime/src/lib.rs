@@ -1,6 +1,9 @@
 //! Agent orchestration and storage, with no dependency on GPUI.
 mod installer;
+mod settings;
 mod store;
+
+pub use settings::SettingsStore;
 
 use installer::{Installer, RELEASE};
 use relay_acp::{Command as AcpCommand, ConnectionHandle, Event};

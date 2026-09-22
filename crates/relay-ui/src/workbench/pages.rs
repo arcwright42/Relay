@@ -12,10 +12,10 @@ impl Workbench {
                 div()
                     .text_size(px(31.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child("Welcome back, Alex."),
+                    .child(self.text(Text::WelcomeBack)),
             )
             .child(
-                muted("A fresh thought, or a familiar project?")
+                muted(self.text(Text::HomePrompt))
                     .text_size(px(18.))
                     .mb(px(22.)),
             )
@@ -52,40 +52,124 @@ impl Workbench {
             }))
     }
 
-    pub(super) fn settings(&self) -> Div {
-        column()
-            .flex_1()
-            .justify_center()
-            .px(px(55.))
-            .pb(px(80.))
-            .gap(px(18.))
-            .child(
-                div()
-                    .text_size(px(30.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .mb(px(12.))
-                    .child("A space that feels like you."),
-            )
-            .child(Self::setting_row(
-                "Appearance",
-                "Light",
-                "A quiet canvas for your work.",
-            ))
-            .child(Self::setting_row(
-                "Workspace",
-                "Local",
-                "Conversations are saved per project. Unsent drafts stay in this app session.",
-            ))
-            .child(Self::setting_row(
-                "Agent connections",
-                "Codex · ACP",
-                "Managed components, with optional local Codex installations.",
-            ))
-            .child(Self::setting_row(
-                "Relay",
-                env!("CARGO_PKG_VERSION"),
-                "Made for the way you work.",
-            ))
+    pub(super) fn settings(&self, cx: &mut Context<Self>) -> Div {
+        column().flex_1().min_h_0().child(
+            column()
+                .id("preferences-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .px(px(55.))
+                .py(px(34.))
+                .gap(px(18.))
+                .child(
+                    div()
+                        .text_size(px(30.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .mb(px(12.))
+                        .child(self.text(Text::SettingsTitle)),
+                )
+                .child(
+                    column()
+                        .gap(px(14.))
+                        .p(px(22.))
+                        .rounded(px(14.))
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .mb(px(10.))
+                        .child(
+                            row()
+                                .justify_between()
+                                .gap(px(24.))
+                                .child(
+                                    column()
+                                        .flex_1()
+                                        .gap(px(8.))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(self.text(Text::Language)),
+                                        )
+                                        .child(
+                                            muted(self.text(Text::LanguageDetail))
+                                                .text_size(px(12.)),
+                                        ),
+                                )
+                                .child(
+                                    row().gap(px(8.)).children(
+                                        [Language::SimplifiedChinese, Language::English]
+                                            .into_iter()
+                                            .map(|language| {
+                                                let selected =
+                                                    self.settings_snapshot.language == language;
+                                                Button::new(language.code())
+                                                    .outline()
+                                                    .label(language.native_name())
+                                                    .accessibility_label(language.native_name())
+                                                    .rounded(px(8.))
+                                                    .when(selected, |button| {
+                                                        button.primary().icon(IconName::Check)
+                                                    })
+                                                    .on_click(cx.listener(
+                                                        move |this, _, window, cx| {
+                                                            this.set_language(language, window, cx)
+                                                        },
+                                                    ))
+                                            }),
+                                    ),
+                                ),
+                        )
+                        .when(self.settings_snapshot.saving, |view| {
+                            view.child(muted(self.text(Text::SavingSettings)).text_size(px(12.)))
+                        })
+                        .when_some(self.settings_snapshot.error.as_ref(), |view, error| {
+                            view.child(
+                                column()
+                                    .gap(px(8.))
+                                    .text_size(px(12.))
+                                    .child(
+                                        div()
+                                            .text_color(rgb(0x9a542a))
+                                            .child(self.text(Text::SettingsError)),
+                                    )
+                                    .child(muted(error.clone()))
+                                    .child(
+                                        Button::new("retry-settings-save")
+                                            .ghost()
+                                            .small()
+                                            .label(self.text(Text::Retry))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.set_language(
+                                                    this.settings_snapshot.language,
+                                                    window,
+                                                    cx,
+                                                )
+                                            })),
+                                    ),
+                            )
+                        }),
+                )
+                .child(Self::setting_row(
+                    self.text(Text::Appearance),
+                    self.text(Text::Light),
+                    self.text(Text::AppearanceDetail),
+                ))
+                .child(Self::setting_row(
+                    self.text(Text::Workspace),
+                    self.text(Text::Local),
+                    self.text(Text::WorkspaceDetail),
+                ))
+                .child(Self::setting_row(
+                    self.text(Text::AgentConnections),
+                    "Codex · ACP",
+                    self.text(Text::AgentConnectionsDetail),
+                ))
+                .child(Self::setting_row(
+                    "Relay",
+                    env!("CARGO_PKG_VERSION"),
+                    self.text(Text::AboutDetail),
+                )),
+        )
     }
 
     fn setting_row(title: &'static str, value: &'static str, detail: &'static str) -> Div {

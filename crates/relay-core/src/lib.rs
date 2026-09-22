@@ -2,6 +2,7 @@
 //! This package intentionally has no framework or runtime dependencies.
 
 pub mod agents;
+pub mod settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProjectId(pub u64);

@@ -6,10 +6,10 @@
 
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
-| `relay` | 应用启动、依赖装配、窗口、原生菜单与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`gpui-kit` |
-| `relay-ui` | 工作台、输入状态、导航、视觉资源引用与示例数据 | `relay-core`、`gpui-kit` |
-| `relay-core` | 项目标识、上下文类型和领域数据 | 无 |
-| `relay-runtime` | 安装来源、版本校验、项目会话状态、可见对话持久化 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2` |
+| `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`gpui-kit` |
+| `relay-ui` | 工作台、输入状态、导航、中英文文案与原生菜单、视觉资源引用与示例数据 | `relay-core`、`gpui-kit` |
+| `relay-core` | 项目标识、上下文类型、领域数据、AgentService 与 SettingsService 接口 | 无 |
+| `relay-runtime` | 安装来源、版本校验、项目会话状态、可见对话与应用偏好持久化 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2` |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
 | `xtask` | 包边界检查、质量检查、图标生成与本地 macOS 打包 | `serde_json` |
 
@@ -18,6 +18,8 @@
 运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口将实现了 `AgentService` 的 runtime 注入 UI；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。示例资料只放在 `relay-ui::preview`，不会进入真实 prompt。
 
 当前简单的对话存储放在 `relay-runtime::store`。未来完整项目存储和 macOS 能力有具体实现时再拆分 `relay-storage`、`relay-platform`；接入前同时更新此文档与 `xtask` 的允许依赖图。
+
+应用偏好通过独立的 `SettingsService` 注入 UI，由 `relay-runtime::settings` 保存到应用级 `settings.json`。切换语言先更新内存，单个后台写入线程合并并按顺序保存，使用临时文件、sync 与原子替换；损坏或不支持的文件保留原样并显示错误。UI 的编译期文案表要求每项同时有中英文，不新增依赖。语言切换同步组件及原生菜单，不发送 Agent 命令，不改项目对话、草稿或 ACP 配置 ID。
 
 ## 依赖和版本
 
