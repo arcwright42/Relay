@@ -6,8 +6,9 @@
 
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
-| `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`gpui-kit` |
+| `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`relay-platform`、`gpui-kit` |
 | `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
+| `relay-platform` | macOS 全局快捷键与辅助功能选区采集 | `relay-core`、`async-channel` |
 | `relay-core` | 项目、资料、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
 | `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
@@ -17,13 +18,17 @@
 
 运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口注入 AgentService、ProjectService 和 SettingsService；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。项目预览资料已移除。
 
-当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。继续沿用现有 crate，未来数据库和 macOS 能力需要独立边界时再拆分；接入前同步允许依赖图。
+当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。macOS 能力已拆入 `relay-platform`；后续数据库等能力在需要独立边界时再拆分，接入前同步允许依赖图。
 
 Jev 位于 `relay-runtime::routing`，使用固定 `ureq 3.4.2`（Rustls / JSON）调用 HTTPS API，密钥通过固定 `security-framework 3.7.0` 保存到 macOS 钥匙串。RoutingService 不使用 ACP，UI 只读取领域决策和配置状态。HTTP 和 Keychain 写入在后台调用，内存快照锁不覆盖阻塞写入；测试使用本地 HTTP 服务和内存凭据，不访问个人密钥。不新增 crate；新增依赖已同步精确版本、锁文件与包边界白名单。
 
 ACP SDK 仍固定 2.2.0，仅显式开启 `unstable_end_turn_token_usage` 来读取可选用量；不启用整个 unstable 集合，不升级 lockfile。缺失或损坏的可选 usage 不影响对话。测试专用 `relay-runtime/test-support` 只转发 `relay-acp/test-support`，用内存传输验证快照交付、写入顺序与失败恢复；产品默认构建不含测试传输。
 
 应用偏好通过独立的 `SettingsService` 注入 UI，由 `relay-runtime::settings` 保存到应用级 `settings.json`。切换语言先更新内存，单个后台写入线程合并并按顺序保存，使用临时文件、sync 与原子替换；损坏或不支持的文件保留原样并显示错误。UI 的编译期文案表要求每项同时有中英文，不新增依赖。语言切换同步组件及原生菜单，不发送 Agent 命令，不改项目对话、草稿或 ACP 配置 ID。
+
+`relay-platform` 是 macOS FFI 的独立边界：Carbon 注册 Control + Option + Space，事件通过容量为 1 的异步通道送给 UI；辅助功能在后台读取选区及窗口 AXDocument。该包因系统 FFI 显式使用 unsafe，并要求 unsafe_op_in_unsafe_fn = deny；其余包继续 forbid unsafe。注册句柄只在主线程创建和释放，CF 对象按所有权释放。UI 不直接依赖平台包。
+
+`relay-core::capture` 定义不可变选区、动作和网页抓取接口；`relay-runtime::webfetch` 后台执行 Moli，UI 在点击发送时只组装当时已取得的材料。
 
 ## 依赖和版本
 
@@ -55,6 +60,8 @@ cargo xtask verify
 组件先安装到临时目录，校验版本后再激活；失败保留当前版本，替换失败恢复原目录。旧版本目录保留，尚无用户可操作的升级/回滚界面。选择本地 Codex 时，只有 Codex 可执行文件来自用户指定路径，适配器和 Node 仍由 Relay 管理。升级须同步清单、lockfile、Rust 中的版本标识、校验值及真实连接验证记录。详见 [Codex 接入](CODEX.md)。
 
 ## 本地交付
+
+Moli 是独立的按需网页采集组件，固定 1.1.10。`moli_installer` 使用官方 macOS Apple Silicon / Intel 归档的固定 SHA-256，复用校验、临时目录与原子激活流程；不执行在线安装脚本。`webfetch` 将 stdout 写入仅当前用户可读的临时文件，限制正文与总输出大小，超时/退出结束进程组并清理。许可证随原发布归档保留；`RELAY_MOLI_PATH` 是显式本地覆盖入口。
 
 ```sh
 cargo run --locked

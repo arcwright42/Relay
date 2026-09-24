@@ -4,10 +4,13 @@ mod context;
 mod delivery_tests;
 mod installer;
 mod metrics;
+mod moli_installer;
 mod projects;
 mod routing;
 mod settings;
 mod store;
+mod webfetch;
+pub use webfetch::MoliFetcher;
 
 pub use projects::ProjectStore;
 pub use routing::JevRouter;

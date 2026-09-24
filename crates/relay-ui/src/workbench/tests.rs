@@ -669,3 +669,246 @@ fn new_projects_appear_without_resetting_other_drafts_and_empty_catalog_is_rende
     })
     .unwrap();
 }
+
+struct PageFetcher;
+impl relay_core::capture::WebFetchService for PageFetcher {
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        Ok(format!("page-body-for-{url}"))
+    }
+}
+
+#[gpui_kit::test]
+fn quick_submission_does_not_wait_for_fetch_or_overwrite_workspace_draft(cx: &mut TestAppContext) {
+    use relay_core::capture::{QuickAction, Selection};
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let projects = Arc::new(TestProjects::default());
+    let workspace = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            projects.clone(),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    let quick = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            projects.clone(),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    workspace
+        .update(cx, |view, window, cx| {
+            view.drafts[0].update(cx, |draft, cx| {
+                draft.set_value("keep workspace draft", window, cx)
+            });
+        })
+        .unwrap();
+    quick
+        .update(cx, |view, window, cx| {
+            view.capture(
+                Selection {
+                    text: "selected evidence".into(),
+                    url: Some("https://example.com/a".into()),
+                    ..Default::default()
+                },
+                Arc::new(PageFetcher),
+                window,
+                cx,
+            );
+            view.quick_send(QuickAction::Search, window, cx);
+            view.quick_send(QuickAction::Search, window, cx); // repeated clicks must not send twice
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let commands = agents.0.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], (ProjectId(1), AgentCommand::Send(text)) if text.contains("selected evidence") && !text.contains("page-body-for"))
+    );
+    workspace
+        .update(cx, |view, _, cx| {
+            assert_eq!(view.drafts[0].read(cx).value(), "keep workspace draft");
+        })
+        .unwrap();
+    quick
+        .update(cx, |view, window, cx| {
+            view.drafts[0].update(cx, |draft, cx| draft.set_value("follow-up", window, cx));
+        })
+        .unwrap();
+    drop(commands);
+    quick
+        .update(cx, |view, window, cx| {
+            view.quick_send(QuickAction::Ask, window, cx)
+        })
+        .unwrap();
+    assert!(
+        matches!(&agents.0.lock().unwrap()[1], (_, AgentCommand::Send(text)) if text == "follow-up")
+    );
+}
+
+#[gpui_kit::test]
+fn quick_recapture_uses_only_latest_page_and_saves_without_agent(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt;
+    use relay_core::capture::{QuickAction, Selection};
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let projects = Arc::new(TestProjects::default());
+    let quick = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            projects.clone(),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    quick
+        .update(cx, |view, window, cx| {
+            for suffix in ["old", "new"] {
+                view.capture(
+                    Selection {
+                        text: format!("{suffix} selection"),
+                        url: Some(format!("https://example.com/{suffix}")),
+                        ..Default::default()
+                    },
+                    Arc::new(PageFetcher),
+                    window,
+                    cx,
+                );
+            }
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("quick-save", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(agents.0.lock().unwrap().is_empty());
+    let catalog = projects.snapshot();
+    assert_eq!(catalog.projects[0].context.len(), 1);
+    assert!(
+        catalog.projects[0].context[0]
+            .content
+            .contains("new selection")
+    );
+    assert!(!catalog.projects[0].context[0].included);
+    quick
+        .update(cx, |view, window, cx| {
+            view.quick_send(QuickAction::Explain, window, cx)
+        })
+        .unwrap();
+    assert!(
+        matches!(&agents.0.lock().unwrap()[0], (_, AgentCommand::Send(text)) if text.contains("page-body-for-https://example.com/new") && !text.contains("/old"))
+    );
+}
+
+#[gpui_kit::test]
+fn quick_busy_project_and_failed_fetch_preserve_input(cx: &mut TestAppContext) {
+    use relay_core::capture::{QuickAction, Selection};
+    struct FailedFetch;
+    impl relay_core::capture::WebFetchService for FailedFetch {
+        fn fetch(&self, _: &str) -> Result<String, String> {
+            Err("timeout".into())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(TestAgents::default());
+    let quick = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    quick
+        .update(cx, |view, window, cx| {
+            view.capture(
+                Selection {
+                    text: "selection".into(),
+                    url: Some("https://example.com".into()),
+                    ..Default::default()
+                },
+                Arc::new(FailedFetch),
+                window,
+                cx,
+            );
+            view.drafts[0].update(cx, |draft, cx| draft.set_value("keep question", window, cx));
+        })
+        .unwrap();
+    cx.run_until_parked();
+    quick
+        .update(cx, |view, window, cx| {
+            view.quick_send(QuickAction::Search, window, cx);
+            assert_eq!(view.drafts[0].read(cx).value(), "keep question");
+        })
+        .unwrap();
+    assert!(agents.0.lock().unwrap().is_empty());
+}
+
+#[gpui_kit::test]
+fn quick_pasted_question_still_searches_after_fetch_failure(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt;
+    use relay_core::capture::Selection;
+    struct FailedFetch;
+    impl relay_core::capture::WebFetchService for FailedFetch {
+        fn fetch(&self, _: &str) -> Result<String, String> {
+            Err("unavailable".into())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let quick = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    cx.simulate_window_resize(
+        quick.into(),
+        gpui_kit::size(gpui_kit::px(760.), gpui_kit::px(800.)),
+    );
+    quick
+        .update(cx, |view, window, cx| {
+            view.capture(
+                Selection {
+                    url: Some("https://example.com".into()),
+                    ..Default::default()
+                },
+                Arc::new(FailedFetch),
+                window,
+                cx,
+            );
+            view.open_project(ProjectId(2), window, cx);
+            view.drafts[1].update(cx, |draft, cx| {
+                draft.set_value("pasted question", window, cx)
+            });
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("quick-action", 0_usize), cx);
+    })
+    .unwrap();
+    let commands = agents.0.lock().unwrap();
+    assert!(
+        matches!(&commands[0], (ProjectId(2), AgentCommand::Send(text)) if text.contains("pasted question") && text.contains("联网搜索") && !text.contains("来源网页正文"))
+    );
+}

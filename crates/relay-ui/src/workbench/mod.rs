@@ -4,6 +4,8 @@ mod diagnostics;
 mod navigation;
 mod pages;
 mod projects;
+mod quick;
+pub use quick::OpenProject;
 mod routing;
 #[cfg(test)]
 mod tests;
@@ -86,6 +88,7 @@ fn explain(
 }
 
 pub struct Workbench {
+    quick: Option<quick::QuickEntry>,
     project_service: Arc<dyn ProjectService>,
     project_revision: u64,
     project_error: Option<String>,
@@ -188,6 +191,7 @@ impl Workbench {
             }
         });
         Self {
+            quick: None,
             project_service,
             project_revision: catalog.revision,
             project_error: catalog.error,
@@ -265,6 +269,10 @@ impl Workbench {
         if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
             return;
         }
+        if self.quick.is_some() {
+            self.quick_send(relay_core::capture::QuickAction::Ask, window, cx);
+            return;
+        }
         if self.page == Page::Home {
             self.route_prompt(window, cx);
             return;
@@ -316,36 +324,40 @@ fn project_icon(index: usize) -> IconName {
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < px(1280.);
-        let content = match self.page {
-            Page::Project(_) => {
-                if self.agent_states[self.selected_project].messages.is_empty() {
-                    self.welcome(compact, cx)
-                } else {
-                    self.conversation(compact, cx)
+        let content = if self.quick.is_some() {
+            self.quick_view(cx)
+        } else {
+            match self.page {
+                Page::Project(_) => {
+                    if self.agent_states[self.selected_project].messages.is_empty() {
+                        self.welcome(compact, cx)
+                    } else {
+                        self.conversation(compact, cx)
+                    }
                 }
+                Page::Home => self.home(cx),
+                Page::Agents if !self.projects.is_empty() => self.agents(cx),
+                Page::Agents => self.home(cx),
+                Page::Settings => self.settings(cx),
+                Page::Inbox => column()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .pb(px(80.))
+                    .gap(px(15.))
+                    .child(
+                        icon(IconName::Inbox)
+                            .size(px(35.))
+                            .text_color(rgb(0x9999a0)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(26.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(self.text(Text::InboxEmpty)),
+                    )
+                    .child(muted(self.text(Text::InboxEmptyDetail)).text_size(px(14.))),
             }
-            Page::Home => self.home(cx),
-            Page::Agents if !self.projects.is_empty() => self.agents(cx),
-            Page::Agents => self.home(cx),
-            Page::Settings => self.settings(cx),
-            Page::Inbox => column()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .pb(px(80.))
-                .gap(px(15.))
-                .child(
-                    icon(IconName::Inbox)
-                        .size(px(35.))
-                        .text_color(rgb(0x9999a0)),
-                )
-                .child(
-                    div()
-                        .text_size(px(26.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(self.text(Text::InboxEmpty)),
-                )
-                .child(muted(self.text(Text::InboxEmptyDetail)).text_size(px(14.))),
         };
         row()
             .id("relay-workbench")
@@ -365,15 +377,20 @@ impl Render for Workbench {
                     window.focus(&this.focus, cx);
                     cx.stop_propagation();
                     cx.notify();
+                } else if this.quick.is_some() && event.keystroke.key == "escape" {
+                    window.minimize_window();
+                    cx.stop_propagation();
                 }
             }))
-            .child(self.sidebar(compact, cx))
+            .when(self.quick.is_none(), |view| {
+                view.child(self.sidebar(compact, cx))
+            })
             .child(
                 column()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(self.header(cx))
+                    .when(self.quick.is_none(), |view| view.child(self.header(cx)))
                     .child(content),
             )
             .children(Root::render_dialog_layer(window, cx))
