@@ -1,0 +1,25 @@
+[package]
+name = "relay-runtime"
+description = "Managed agent installation, project sessions, and local persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+test-support = ["relay-acp/test-support"]
+
+[dependencies]
+anyhow.workspace = true
+relay-core.workspace = true
+relay-acp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ureq.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+[lints]
+workspace = true

@@ -1,33 +1,45 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
-use relay_ui::{FocusSearch, SendMessage, Workbench};
-
-actions!(relay, [Quit]);
+use relay_core::settings::SettingsService;
+use relay_runtime::{AgentRuntime, JevRouter, ProjectStore, SettingsStore};
+use relay_ui::{FocusSearch, Quit, SendMessage, Workbench, apply_language};
+use std::sync::Arc;
 
 fn main() {
+    let directory = AgentRuntime::default_directory();
+    let settings = Arc::new(SettingsStore::new(directory.clone()));
+    let projects = Arc::new(ProjectStore::new(directory.clone()));
+    let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
+    let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
-        .run(|cx| {
+        .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Light, None, cx);
             Theme::global_mut(cx).font_size = px(14.);
+            apply_language(settings.snapshot().language, cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("cmd-k", FocusSearch, None),
                 KeyBinding::new("cmd-enter", SendMessage, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
-            let menus = vec![Menu::new("Relay").items([MenuItem::action("Quit Relay", Quit)])];
-            #[cfg(feature = "devtools")]
-            let menus = {
-                let mut menus = menus;
-                menus.push(Menu::new("开发者").items([MenuItem::action(
-                    "检查元素",
-                    gpui_kit::component::ToggleInspector,
-                )]));
-                menus
-            };
-            cx.set_menus(menus);
+            let shutdown_agents = agents.clone();
+            cx.on_app_quit(move |cx| {
+                let agents = shutdown_agents.clone();
+                cx.background_executor().spawn(async move {
+                    agents.shutdown();
+                })
+            })
+            .detach();
+            let shutdown_settings = settings.clone();
+            cx.on_app_quit(move |cx| {
+                let settings = shutdown_settings.clone();
+                cx.background_executor().spawn(async move {
+                    settings.shutdown();
+                })
+            })
+            .detach();
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -49,7 +61,9 @@ fn main() {
                         ..Default::default()
                     },
                     |window, cx| {
-                        let view = cx.new(|cx| Workbench::new(window, cx));
+                        let view = cx.new(|cx| {
+                            Workbench::new(agents, settings, projects, routing, window, cx)
+                        });
                         cx.new(|cx| Root::new(view, window, cx))
                     },
                 )

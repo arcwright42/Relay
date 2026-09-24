@@ -81,29 +81,52 @@ impl Workbench {
                                     .text_color(rgb(0x6c6c72)),
                             )
                             .suffix(muted("⌘K").text_size(px(12.)))
-                            .aria_label("Search projects")
-                            .map(|input| {
-                                #[cfg(feature = "devtools")]
-                                let input = input.context_menu(crate::devtools::input_menu);
-                                input
-                            }),
+                            .aria_label(self.text(Text::SearchProjects))
+                            .context_menu(crate::locale::input_menu),
                     ),
             )
             .child(
                 column()
                     .gap(px(3.))
-                    .child(self.nav_button("home", "Home", IconName::House, Page::Home, cx))
-                    .child(self.nav_button("inbox", "Inbox", IconName::Inbox, Page::Inbox, cx)),
+                    .child(self.nav_button(
+                        "home",
+                        self.text(Text::Home),
+                        IconName::House,
+                        Page::Home,
+                        cx,
+                    ))
+                    .child(self.nav_button(
+                        "inbox",
+                        self.text(Text::Inbox),
+                        IconName::Inbox,
+                        Page::Inbox,
+                        cx,
+                    )),
             )
             .child(
-                muted("Projects")
-                    .text_size(px(12.))
+                row()
+                    .justify_between()
                     .px(px(10.))
-                    .mt(px(32.))
-                    .mb(px(9.)),
+                    .mt(px(24.))
+                    .mb(px(7.))
+                    .child(muted(self.text(Text::Projects)).text_size(px(12.)))
+                    .child(
+                        icon_button(
+                            "create-project",
+                            IconName::Plus,
+                            self.text(Text::NewProject),
+                        )
+                        .disabled(self.project_error.is_some())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.edit_project(None, window, cx)),
+                        ),
+                    ),
             )
             .child(
                 column()
+                    .id("sidebar-projects")
+                    .max_h(px(380.))
+                    .overflow_y_scroll()
                     .gap(px(3.))
                     .children(visible.iter().map(|(index, project)| {
                         self.nav_button(
@@ -116,7 +139,7 @@ impl Workbench {
                     }))
                     .when(visible.is_empty(), |this| {
                         this.child(
-                            muted("No projects found")
+                            muted(self.text(Text::NoProjects))
                                 .px(px(12.))
                                 .py(px(10.))
                                 .text_size(px(12.)),
@@ -127,10 +150,16 @@ impl Workbench {
             .child(
                 column()
                     .gap(px(3.))
-                    .child(self.nav_button("agents", "Agents", IconName::Box, Page::Agents, cx))
+                    .child(self.nav_button(
+                        "agents",
+                        self.text(Text::Agents),
+                        IconName::Box,
+                        Page::Agents,
+                        cx,
+                    ))
                     .child(self.nav_button(
                         "settings",
-                        "Settings",
+                        self.text(Text::Settings),
                         IconName::Settings,
                         Page::Settings,
                         cx,
@@ -161,27 +190,67 @@ impl Workbench {
                 self.projects[index].description.as_str(),
                 project_icon(index),
             ),
-            Page::Home => ("Home", "Your ideas, in good company.", IconName::House),
-            Page::Inbox => ("Inbox", "A home for thoughts in passing.", IconName::Inbox),
+            Page::Home => (
+                self.text(Text::Home),
+                self.text(Text::HomeSubtitle),
+                IconName::House,
+            ),
+            Page::Inbox => (
+                self.text(Text::Inbox),
+                self.text(Text::InboxSubtitle),
+                IconName::Inbox,
+            ),
             Page::Agents => (
-                "Agents",
-                "Bring your favorite agents together.",
+                self.text(Text::Agents),
+                self.text(Text::AgentsSubtitle),
                 IconName::Box,
             ),
             Page::Settings => (
-                "Settings",
-                "Make room for the way you work.",
+                self.text(Text::Settings),
+                self.text(Text::SettingsSubtitle),
                 IconName::Settings,
             ),
         };
-        row().h(px(88.)).flex_shrink_0().px(px(36.)).justify_between()
-            .child(row().gap(px(17.)).child(icon(glyph).size(px(21.))).child(column().gap(px(5.)).child(div().font_weight(FontWeight::MEDIUM).text_size(px(15.)).child(title.to_owned())).child(muted(subtitle.to_owned()).text_size(px(12.)))))
-            .child(row().gap(px(7.))
-                .child(icon_button("project-members", IconName::Users, "Project details").on_click(cx.listener(|this, _, window, cx| {
-                    explain(this.projects[this.selected_project].name.clone(), "A shared home for your conversations, sources, decisions, and results. Alex is the owner of this preview workspace.", window, cx);
-                })))
-                .child(icon_button("project-menu", IconName::Ellipsis, "More options").on_click(cx.listener(|this, _, window, cx| {
-                    this.navigate(Page::Settings, window, cx);
-                }))))
+        row()
+            .h(px(88.))
+            .flex_shrink_0()
+            .px(px(36.))
+            .justify_between()
+            .child(
+                row().gap(px(17.)).child(icon(glyph).size(px(21.))).child(
+                    column()
+                        .gap(px(5.))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(px(15.))
+                                .child(title.to_owned()),
+                        )
+                        .child(muted(subtitle.to_owned()).text_size(px(12.))),
+                ),
+            )
+            .child(
+                row()
+                    .gap(px(7.))
+                    .child(
+                        icon_button(
+                            "project-members",
+                            IconName::Settings,
+                            self.text(Text::ProjectDetails),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(project) = this.projects.get(this.selected_project).cloned()
+                            {
+                                this.edit_project(Some(project), window, cx);
+                            }
+                        })),
+                    )
+                    .child(
+                        icon_button("project-menu", IconName::Layers, self.text(Text::Context))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.show_context(window, cx);
+                            })),
+                    ),
+            )
     }
 }

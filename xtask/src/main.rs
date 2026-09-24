@@ -17,13 +17,17 @@ fn main() -> Result<()> {
                     "clippy",
                     "--workspace",
                     "--all-targets",
+                    "--all-features",
                     "--locked",
                     "--",
                     "-D",
                     "warnings",
                 ],
             )?;
-            run("cargo", &["test", "--workspace", "--locked"])
+            run(
+                "cargo",
+                &["test", "--workspace", "--all-features", "--locked"],
+            )
         }
         Some("icon") => build_icon(root),
         Some("bundle") => bundle(root, std::env::args().any(|arg| arg == "--release")),
@@ -54,9 +58,27 @@ fn metadata() -> Result<Value> {
 fn validate_package(package: &Value) -> Result<()> {
     let name = package["name"].as_str().ok_or("Missing package name")?;
     let allowed: &[&str] = match name {
-        "relay" => &["gpui-kit", "relay-ui"],
+        "relay" => &["gpui-kit", "relay-ui", "relay-core", "relay-runtime"],
         "relay-ui" => &["gpui-kit", "relay-core"],
         "relay-core" => &[],
+        "relay-runtime" => &[
+            "anyhow",
+            "relay-core",
+            "relay-acp",
+            "serde",
+            "serde_json",
+            "sha2",
+            "ureq",
+            "security-framework",
+        ],
+        "relay-acp" => &[
+            "agent-client-protocol",
+            "async-channel",
+            "async-io",
+            "futures-lite",
+            "relay-core",
+            "serde_json",
+        ],
         "xtask" => &["serde_json"],
         _ => {
             return Err(format!(
@@ -106,6 +128,78 @@ fn check_packages() -> Result<()> {
             "{}: package boundary OK",
             package["name"].as_str().unwrap_or("unknown")
         );
+    }
+    validate_managed_packages(
+        &serde_json::from_str(include_str!(
+            "../../crates/relay-runtime/resources/codex/package.json"
+        ))?,
+        &serde_json::from_str(include_str!(
+            "../../crates/relay-runtime/resources/codex/package-lock.json"
+        ))?,
+    )?;
+    println!("managed Codex: package versions and integrity lock OK");
+    Ok(())
+}
+
+fn exact_version(value: &str) -> bool {
+    let base = value.split_once('-').map_or(value, |(base, _)| base);
+    let parts: Vec<_> = base.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|c| c.is_ascii_digit()))
+}
+
+fn validate_managed_packages(package: &Value, lock: &Value) -> Result<()> {
+    if package["private"] != true || lock["lockfileVersion"] != 3 {
+        return Err("Managed components must be private and use npm lockfile v3".into());
+    }
+    let dependencies = package["dependencies"]
+        .as_object()
+        .ok_or("Missing managed dependencies")?;
+    if dependencies.len() != 2
+        || !dependencies.contains_key("@agentclientprotocol/codex-acp")
+        || !dependencies.contains_key("@openai/codex")
+    {
+        return Err("Review the managed Codex package boundary before adding dependencies".into());
+    }
+    if lock["packages"][""]["dependencies"] != package["dependencies"]
+        || package["overrides"]["@openai/codex"] != package["dependencies"]["@openai/codex"]
+    {
+        return Err("Managed dependency manifest, override, and lockfile disagree".into());
+    }
+    for (name, version) in dependencies {
+        let version = version.as_str().ok_or("Invalid component version")?;
+        if !exact_version(version)
+            || lock["packages"][format!("node_modules/{name}")]["version"] != version
+        {
+            return Err(format!("{name}: pin the exact installed version").into());
+        }
+    }
+    for (path, entry) in lock["packages"]
+        .as_object()
+        .ok_or("Missing locked packages")?
+    {
+        if path.is_empty() {
+            continue;
+        }
+        if !path.starts_with("node_modules/")
+            || !exact_version(entry["version"].as_str().unwrap_or(""))
+            || !entry["resolved"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("https://registry.npmjs.org/")
+            || !entry["integrity"]
+                .as_str()
+                .unwrap_or("")
+                .strip_prefix("sha512-")
+                .is_some_and(|digest| digest.len() == 88)
+        {
+            return Err(format!(
+                "{path}: require a pinned registry package with SHA-512 integrity"
+            )
+            .into());
+        }
     }
     Ok(())
 }
@@ -187,14 +281,18 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
     let contents = app.join("Contents");
     fs::create_dir_all(contents.join("MacOS"))?;
     fs::create_dir_all(contents.join("Resources"))?;
+    // Replace the executable atomically so an open development app can finish its
+    // current conversation using the old inode while the next launch uses this build.
+    let pending_executable = contents.join(format!("MacOS/.relay-next-{}", std::process::id()));
     fs::copy(
         target.join(if release {
             "release/relay"
         } else {
             "debug/relay"
         }),
-        contents.join("MacOS/relay"),
+        &pending_executable,
     )?;
+    fs::rename(pending_executable, contents.join("MacOS/relay"))?;
     fs::copy(
         root.join("assets/Relay.icns"),
         contents.join("Resources/Relay.icns"),
@@ -270,4 +368,22 @@ mod tests {
         assert!(validate_package(&git).is_err());
         assert!(validate_package(&package("surprise-package", serde_json::json!([]))).is_err());
     }
+}
+#[test]
+fn managed_packages_reject_floating_versions_and_missing_integrity() {
+    let package: Value = serde_json::from_str(include_str!(
+        "../../crates/relay-runtime/resources/codex/package.json"
+    ))
+    .unwrap();
+    let lock: Value = serde_json::from_str(include_str!(
+        "../../crates/relay-runtime/resources/codex/package-lock.json"
+    ))
+    .unwrap();
+    assert!(validate_managed_packages(&package, &lock).is_ok());
+    let mut floating = package.clone();
+    floating["dependencies"]["@openai/codex"] = "latest".into();
+    assert!(validate_managed_packages(&floating, &lock).is_err());
+    let mut corrupt = lock.clone();
+    corrupt["packages"]["node_modules/@openai/codex"]["integrity"] = Value::Null;
+    assert!(validate_managed_packages(&package, &corrupt).is_err());
 }

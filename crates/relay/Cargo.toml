@@ -12,6 +12,8 @@ devtools = ["gpui-kit/inspector", "relay-ui/devtools"]
 
 [dependencies]
 gpui-kit.workspace = true
+relay-core.workspace = true
+relay-runtime.workspace = true
 relay-ui.workspace = true
 
 [lints]

@@ -1,6 +1,12 @@
+mod agents;
 mod conversation;
+mod diagnostics;
 mod navigation;
 mod pages;
+mod projects;
+mod routing;
+#[cfg(test)]
+mod tests;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -10,8 +16,18 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
-use crate::preview::{Page, preview_projects};
-use relay_core::{ContextKind, Project};
+use crate::{
+    i18n::{Text, Translate},
+    preview::Page,
+};
+use relay_core::{
+    Project,
+    agents::*,
+    projects::{ProjectCommand, ProjectService},
+    routing::RoutingService,
+    settings::{Language, SettingsService, SettingsSnapshot},
+};
+use std::{sync::Arc, time::Duration};
 
 actions!(relay, [FocusSearch, SendMessage]);
 
@@ -70,29 +86,58 @@ fn explain(
 }
 
 pub struct Workbench {
+    project_service: Arc<dyn ProjectService>,
+    project_revision: u64,
+    project_error: Option<String>,
+    project_saving: bool,
+    settings_service: Arc<dyn SettingsService>,
+    settings_snapshot: SettingsSnapshot,
+    routing_service: Arc<dyn RoutingService>,
+    routing: routing::RoutingUi,
     page: Page,
     selected_project: usize,
     projects: Vec<Project>,
     drafts: Vec<Entity<TextareaState>>,
     search: Entity<InputState>,
     focus: FocusHandle,
+    agent_service: Arc<dyn AgentService>,
+    agent_states: Vec<AgentSnapshot>,
+    agent_errors: Vec<Option<String>>,
+    agent_revision: u64,
+    picker_open: bool,
+    conversation_scroll: ScrollHandle,
+    _agent_updates: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workbench {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let projects = preview_projects();
+    pub fn new(
+        agent_service: Arc<dyn AgentService>,
+        settings_service: Arc<dyn SettingsService>,
+        project_service: Arc<dyn ProjectService>,
+        routing_service: Arc<dyn RoutingService>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let settings_snapshot = settings_service.snapshot();
+        let language = settings_snapshot.language;
+        let routing =
+            routing::RoutingUi::new(language, routing_service.snapshot().provider, window, cx);
+        let catalog = project_service.snapshot();
+        let projects = catalog.projects;
         let drafts: Vec<_> = projects
             .iter()
             .map(|_| {
                 cx.new(|cx| {
                     TextareaState::new(window, cx)
-                        .placeholder("Ask Relay…")
+                        .placeholder(language.text(Text::AskRelay))
                         .auto_grow(2, 6)
                 })
             })
             .collect();
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search…"));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(language.text(Text::SearchPlaceholder))
+        });
         let mut subscriptions = vec![cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
@@ -101,34 +146,129 @@ impl Workbench {
         for draft in &drafts {
             subscriptions.push(cx.subscribe_in(draft, window, |_, _, _, _, cx| cx.notify()));
         }
+        subscriptions.push(
+            cx.subscribe_in(&routing.draft, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) && !this.routing.creating {
+                    this.routing.reset_decision();
+                }
+                cx.notify();
+            }),
+        );
+        subscriptions.push(
+            cx.subscribe_in(&routing.key, window, |_, _, _: &InputEvent, _, cx| {
+                cx.notify()
+            }),
+        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let agent_states = projects
+            .iter()
+            .map(|p| agent_service.snapshot(p.id))
+            .collect();
+        let agent_revision = agent_service.revision();
+        let executor = cx.background_executor().clone();
+        let updates = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                executor.timer(Duration::from_millis(100)).await;
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.refresh_projects(window, cx);
+                        this.refresh_agents(cx);
+                        this.advance_routed_send(window, cx);
+                        let settings = this.settings_service.snapshot();
+                        if this.settings_snapshot != settings {
+                            this.settings_snapshot = settings;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
-            page: Page::Project(0),
+            project_service,
+            project_revision: catalog.revision,
+            project_error: catalog.error,
+            project_saving: false,
+            settings_service,
+            settings_snapshot,
+            routing_service,
+            routing,
+            page: Page::Home,
             selected_project: 0,
+            agent_errors: vec![None; projects.len()],
             projects,
             drafts,
             search,
             focus,
+            agent_service,
+            agent_states,
+            agent_revision,
+            picker_open: false,
+            conversation_scroll: ScrollHandle::new(),
+            _agent_updates: updates,
             _subscriptions: subscriptions,
         }
     }
 
+    fn text(&self, key: Text) -> &'static str {
+        self.settings_snapshot.language.text(key)
+    }
+
+    fn set_language(&mut self, language: Language, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_service.set_language(language);
+        self.settings_snapshot = self.settings_service.snapshot();
+        crate::apply_language(language, cx);
+        // User-owned project names, notes and protocol inputs never change with UI language.
+        self.search.update(cx, |search, cx| {
+            search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
+        });
+        for draft in &self.drafts {
+            draft.update(cx, |draft, cx| {
+                draft.set_placeholder(language.text(Text::AskRelay), window, cx)
+            });
+        }
+        self.routing.draft.update(cx, |draft, cx| {
+            draft.set_placeholder(language.text(Text::AskRelay), window, cx)
+        });
+        cx.notify();
+    }
+
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = false;
+        self.routing.pending_send = None;
+        if self.page == Page::Home && page != Page::Home {
+            // Returning Home must not reactivate a decision from before navigation.
+            self.routing.navigation_revision += 1;
+        }
         if let Page::Project(index) = page {
             self.selected_project = index;
         }
         self.page = page;
-        window.focus(&self.focus, cx);
+        if window.root::<Root>().flatten().is_none() || !window.has_active_dialog(cx) {
+            window.focus(&self.focus, cx);
+        }
         cx.notify();
     }
 
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
+        if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
+            return;
+        }
         self.search
             .update(cx, |search, cx| search.focus(window, cx));
     }
 
     fn send_message(&mut self, _: &SendMessage, window: &mut Window, cx: &mut Context<Self>) {
+        if window.root::<Root>().flatten().is_some() && window.has_active_dialog(cx) {
+            return;
+        }
+        if self.page == Page::Home {
+            self.route_prompt(window, cx);
+            return;
+        }
         if !matches!(self.page, Page::Project(_))
             || self.drafts[self.selected_project]
                 .read(cx)
@@ -138,12 +278,21 @@ impl Workbench {
         {
             return;
         }
-        explain(
-            "Connect your project agent",
-            "Your message is ready. Connect a local agent to start the conversation. Your draft will stay in this project.",
-            window,
-            cx,
-        );
+        let text = self.drafts[self.selected_project]
+            .read(cx)
+            .value()
+            .to_string();
+        if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
+            self.picker_open = true;
+            cx.notify();
+            return;
+        }
+        if self.agent_action(AgentCommand::Send(text), cx) {
+            self.drafts[self.selected_project].update(cx, |draft, cx| {
+                draft.set_value("", window, cx);
+            });
+            self.conversation_scroll.scroll_to_bottom();
+        }
     }
 
     fn use_prompt(&mut self, prompt: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -153,52 +302,6 @@ impl Workbench {
             draft.focus(window, cx);
         });
         cx.notify();
-    }
-
-    fn show_context(&self, kind: Option<ContextKind>, window: &mut Window, cx: &mut Context<Self>) {
-        let project = &self.projects[self.selected_project];
-        let items: Vec<_> = project
-            .context
-            .iter()
-            .filter(|item| kind.is_none_or(|kind| kind == item.kind))
-            .cloned()
-            .collect();
-        let title: SharedString = match kind {
-            Some(kind) => format!("{} · {}", project.name.clone(), context_label(kind)).into(),
-            None => format!("{} · Context", project.name).into(),
-        };
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog.title(title.clone()).width(px(480.)).child(
-                column()
-                    .gap(px(12.))
-                    .child(
-                        muted("Project context stays with you when you change agents.")
-                            .text_size(px(13.)),
-                    )
-                    .child(
-                        column()
-                            .id("context-preview-list")
-                            .max_h(px(360.))
-                            .overflow_y_scroll()
-                            .gap(px(4.))
-                            .children(items.iter().map(|item| {
-                                row()
-                                    .gap(px(12.))
-                                    .py(px(9.))
-                                    .child(icon(context_icon(item.kind)))
-                                    .child(item.name.clone())
-                            }))
-                            .when(items.is_empty(), |this| {
-                                this.child(muted("No context in this project yet.").py(px(20.)))
-                            }),
-                    )
-                    .child(
-                        muted("Sample library · File import will be connected next.")
-                            .text_size(px(12.))
-                            .pt(px(8.)),
-                    ),
-            )
-        });
     }
 }
 
@@ -210,22 +313,21 @@ fn project_icon(index: usize) -> IconName {
     }
 }
 
-fn context_icon(kind: ContextKind) -> IconName {
-    match kind {
-        ContextKind::Web => IconName::PanelsTopLeft,
-        ContextKind::Document => IconName::FileText,
-        ContextKind::Image => IconName::Image,
-    }
-}
-
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let compact = window.viewport_size().width < px(1280.);
         let content = match self.page {
-            Page::Project(_) => self.welcome(compact, cx),
+            Page::Project(_) => {
+                if self.agent_states[self.selected_project].messages.is_empty() {
+                    self.welcome(compact, cx)
+                } else {
+                    self.conversation(compact, cx)
+                }
+            }
             Page::Home => self.home(cx),
-            Page::Agents => self.agents(),
-            Page::Settings => self.settings(),
+            Page::Agents if !self.projects.is_empty() => self.agents(cx),
+            Page::Agents => self.home(cx),
+            Page::Settings => self.settings(cx),
             Page::Inbox => column()
                 .flex_1()
                 .items_center()
@@ -241,9 +343,9 @@ impl Render for Workbench {
                     div()
                         .text_size(px(26.))
                         .font_weight(FontWeight::MEDIUM)
-                        .child("All clear."),
+                        .child(self.text(Text::InboxEmpty)),
                 )
-                .child(muted("Ideas you capture along the way will land here.").text_size(px(14.))),
+                .child(muted(self.text(Text::InboxEmptyDetail)).text_size(px(14.))),
         };
         row()
             .id("relay-workbench")
@@ -257,6 +359,14 @@ impl Render for Workbench {
             .bg(rgb(SURFACE))
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::send_message))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.picker_open && event.keystroke.key == "escape" {
+                    this.picker_open = false;
+                    window.focus(&this.focus, cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
             .child(self.sidebar(compact, cx))
             .child(
                 column()
@@ -272,13 +382,5 @@ impl Render for Workbench {
                 let view = view.on_mouse_down(MouseButton::Right, crate::devtools::show_menu);
                 view
             })
-    }
-}
-
-fn context_label(kind: ContextKind) -> &'static str {
-    match kind {
-        ContextKind::Web => "Web pages",
-        ContextKind::Document => "Documents",
-        ContextKind::Image => "Images",
     }
 }
