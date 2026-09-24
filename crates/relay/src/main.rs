@@ -3,8 +3,8 @@ use gpui_kit::*;
 use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
 use relay_runtime::{AgentRuntime, JevRouter, MoliFetcher, ProjectStore, SettingsStore};
 use relay_ui::{
-    FocusSearch, OpenProject, OpenQuick, OpenWorkspace, Quit, SendMessage, Workbench,
-    apply_language,
+    FocusSearch, OpenProject, OpenQuick, OpenWorkspace, Quit, RequestAccessibility, SendMessage,
+    Workbench, apply_language,
 };
 use std::sync::Arc;
 
@@ -41,61 +41,80 @@ fn open_workspace(project: Option<ProjectId>, cx: &mut App) {
     open_window(false, Selection::default(), project, cx);
 }
 fn open_quick(selection: Selection, cx: &mut App) {
-    let services = cx.global::<Desktop>().services.clone();
     let project = cx
         .global::<Desktop>()
         .workspace
         .as_ref()
         .and_then(|(_, view)| view.read(cx).current_project());
-    if let Some((handle, view)) = cx.global::<Desktop>().quick.clone()
-        && handle
-            .update(cx, |_, window, cx| {
-                view.update(cx, |view, cx| {
-                    if let Some(project) = project {
-                        view.open_project(project, window, cx);
-                    }
-                    view.capture(selection.clone(), services.fetcher, window, cx)
-                });
-                window.activate_window();
-            })
-            .is_ok()
-    {
-        cx.activate(true);
-        return;
+    // A fresh capture starts a fresh toolbar, at the current selection's location.
+    if let Some((handle, _)) = cx.global::<Desktop>().quick.clone() {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
     open_window(true, selection, project, cx);
 }
 fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx: &mut App) {
     let services = cx.global::<Desktop>().services.clone();
     let shortcut_error = cx.global::<Desktop>().shortcut_error.clone();
-    let bounds = Bounds::centered(
+    let mut bounds = Bounds::centered(
         None,
         if quick {
-            size(px(760.), px(800.))
+            size(px(640.), px(54.))
         } else {
             size(px(1440.), px(940.))
         },
         cx,
     );
+    let mut display_id = None;
+    if quick && let Some((x, y)) = relay_platform::pointer_position() {
+        let pointer = point(px(x), px(y));
+        if let Some(display) = cx
+            .displays()
+            .into_iter()
+            .find(|d| d.bounds().contains(&pointer))
+        {
+            let screen = display.bounds();
+            display_id = Some(display.id());
+            // Reserve room below for the result panel and keep the toolbar on screen.
+            bounds.origin = point(
+                px(x).clamp(
+                    screen.left() + px(8.),
+                    (screen.right() - bounds.size.width - px(8.)).max(screen.left() + px(8.)),
+                ),
+                px(y + 16.).clamp(
+                    screen.top() + px(30.),
+                    (screen.bottom() - px(590.)).max(screen.top() + px(30.)),
+                ),
+            );
+            bounds.origin -= screen.origin;
+        }
+    }
     let mut view_handle = None;
     let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
+            display_id,
+            titlebar: (!quick).then(|| TitlebarOptions {
                 title: Some("Relay".into()),
                 appears_transparent: true,
                 ..Default::default()
             }),
             kind: if quick {
-                WindowKind::Floating
+                WindowKind::PopUp
             } else {
                 WindowKind::Normal
             },
             window_min_size: Some(if quick {
-                size(px(700.), px(600.))
+                size(px(320.), px(54.))
             } else {
                 size(px(1080.), px(720.))
             }),
+            window_background: if quick {
+                WindowBackgroundAppearance::Blurred
+            } else {
+                WindowBackgroundAppearance::Opaque
+            },
+            focus: !quick,
+            is_resizable: !quick,
             ..Default::default()
         },
         |window, cx| {
@@ -123,8 +142,22 @@ fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx
                 open_workspace(event.0, cx)
             })
             .detach();
+            cx.subscribe(&view, |_, _: &RequestAccessibility, cx| {
+                relay_platform::request_accessibility();
+                cx.open_url(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                );
+            })
+            .detach();
             view_handle = Some(view.clone());
-            cx.new(|cx| Root::new(view, window, cx))
+            cx.new(|cx| {
+                let root = Root::new(view, window, cx);
+                if quick {
+                    root.bordered(false).bg(rgba(0x00000000))
+                } else {
+                    root
+                }
+            })
         },
     );
     match handle {
@@ -136,7 +169,9 @@ fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx
             } else {
                 desktop.workspace = entry;
             }
-            cx.activate(true);
+            if !quick {
+                cx.activate(true);
+            }
         }
         Err(error) => eprintln!("Could not open Relay window: {error}"),
     }

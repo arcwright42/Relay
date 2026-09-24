@@ -9,4 +9,4 @@ mod preview;
 mod workbench;
 
 pub use locale::{OpenQuick, OpenWorkspace, Quit, apply_language};
-pub use workbench::{FocusSearch, OpenProject, SendMessage, Workbench};
+pub use workbench::{FocusSearch, OpenProject, RequestAccessibility, SendMessage, Workbench};

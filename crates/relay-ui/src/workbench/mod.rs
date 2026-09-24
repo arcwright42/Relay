@@ -5,7 +5,7 @@ mod navigation;
 mod pages;
 mod projects;
 mod quick;
-pub use quick::OpenProject;
+pub use quick::{OpenProject, RequestAccessibility};
 mod routing;
 #[cfg(test)]
 mod tests;
@@ -147,7 +147,16 @@ impl Workbench {
             }
         })];
         for draft in &drafts {
-            subscriptions.push(cx.subscribe_in(draft, window, |_, _, _, _, cx| cx.notify()));
+            subscriptions.push(
+                cx.subscribe_in(draft, window, |this, _, event, window, cx| {
+                    if this.quick.is_some()
+                        && matches!(event, InputEvent::PressEnter { shift: false, .. })
+                    {
+                        this.quick_send(relay_core::capture::QuickAction::Ask, window, cx);
+                    }
+                    cx.notify();
+                }),
+            );
         }
         subscriptions.push(
             cx.subscribe_in(&routing.draft, window, |this, _, event, _, cx| {
@@ -368,7 +377,7 @@ impl Render for Workbench {
             .font_family(".SystemUIFont")
             .text_size(px(14.))
             .text_color(rgb(INK))
-            .bg(rgb(SURFACE))
+            .when(self.quick.is_none(), |view| view.bg(rgb(SURFACE)))
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::send_message))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -378,7 +387,7 @@ impl Render for Workbench {
                     cx.stop_propagation();
                     cx.notify();
                 } else if this.quick.is_some() && event.keystroke.key == "escape" {
-                    window.minimize_window();
+                    window.remove_window();
                     cx.stop_propagation();
                 }
             }))

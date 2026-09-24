@@ -45,6 +45,8 @@ unsafe extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: Ref) -> bool;
+    static kAXTrustedCheckOptionPrompt: Ref;
     fn AXUIElementCreateSystemWide() -> Ref;
     fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
     fn AXUIElementSetMessagingTimeout(element: Ref, seconds: f32) -> i32;
@@ -56,6 +58,35 @@ unsafe extern "C" {
     fn CFStringGetTypeID() -> usize;
     fn CFStringCreateWithCString(allocator: Ref, text: *const c_char, encoding: u32) -> Ref;
     fn CFStringGetCString(value: Ref, buffer: *mut c_char, size: isize, encoding: u32) -> bool;
+    static kCFBooleanTrue: Ref;
+    fn CFDictionaryCreate(
+        allocator: Ref,
+        keys: *const Ref,
+        values: *const Ref,
+        count: isize,
+        key_callbacks: Ref,
+        value_callbacks: Ref,
+    ) -> Ref;
+}
+
+/// Called only after the user presses the permission control.
+pub fn request_accessibility() {
+    // SAFETY: both dictionary entries are framework-owned constants. Null callbacks
+    // leave their ownership unchanged; Owned releases only the temporary dictionary.
+    unsafe {
+        let options = CFDictionaryCreate(
+            ptr::null(),
+            &kAXTrustedCheckOptionPrompt,
+            &kCFBooleanTrue,
+            1,
+            ptr::null(),
+            ptr::null(),
+        );
+        if !options.is_null() {
+            let options = Owned(options);
+            AXIsProcessTrustedWithOptions(options.0);
+        }
+    }
 }
 
 extern "C" fn hotkey(_: MutRef, _: MutRef, data: MutRef) -> i32 {
@@ -216,4 +247,29 @@ pub fn capture_selection() -> Selection {
         }
     }
     selection
+}
+
+#[repr(C)]
+struct Point {
+    x: f64,
+    y: f64,
+}
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventCreate(source: Ref) -> Ref;
+    fn CGEventGetLocation(event: Ref) -> Point;
+}
+
+/// Global desktop coordinates, with the origin at the main display's top left.
+pub fn pointer_position() -> Option<(f32, f32)> {
+    // SAFETY: a null source creates a current event; the retained event is released by Owned.
+    unsafe {
+        let event = CGEventCreate(ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let event = Owned(event);
+        let point = CGEventGetLocation(event.0);
+        Some((point.x as f32, point.y as f32))
+    }
 }

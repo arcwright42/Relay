@@ -2,4 +2,4 @@
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-pub use macos::{Shortcut, capture_selection};
+pub use macos::{Shortcut, capture_selection, pointer_position, request_accessibility};

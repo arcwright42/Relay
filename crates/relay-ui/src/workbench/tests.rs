@@ -789,6 +789,8 @@ fn quick_recapture_uses_only_latest_page_and_saves_without_agent(cx: &mut TestAp
     cx.run_until_parked();
     cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
+        window.click("quick-more", cx);
+        window.render_frame(cx);
         window.click("quick-save", cx);
     })
     .unwrap();
@@ -910,5 +912,136 @@ fn quick_pasted_question_still_searches_after_fetch_failure(cx: &mut TestAppCont
     let commands = agents.0.lock().unwrap();
     assert!(
         matches!(&commands[0], (ProjectId(2), AgentCommand::Send(text)) if text.contains("pasted question") && text.contains("联网搜索") && !text.contains("来源网页正文"))
+    );
+}
+
+#[gpui_kit::test]
+fn quick_toolbar_fits_and_result_hides_previous_conversation(cx: &mut TestAppContext) {
+    use gpui_kit::{px, size, test::TestWindowExt};
+    use relay_core::capture::Selection;
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let quick = cx.add_window(|window, cx| {
+        let mut view = Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        );
+        view.capture(
+            Selection {
+                text: "actual browser selection".into(),
+                ..Default::default()
+            },
+            Arc::new(PageFetcher),
+            window,
+            cx,
+        );
+        view.agent_states[0].messages.push(ChatMessage {
+            id: 1,
+            role: MessageRole::Assistant,
+            text: "private earlier reply".into(),
+            status: MessageStatus::Complete,
+            tools: vec![],
+            metrics: None,
+        });
+        view
+    });
+    cx.simulate_window_resize(quick.into(), size(px(640.), px(54.)));
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        for id in ["quick-ask", "quick-more", "quick-close"] {
+            let button = window.find(id);
+            assert!(button.visible());
+            assert!(button.bounds().bottom() <= px(54.));
+            assert!(button.bounds().right() <= px(640.));
+        }
+        window.click(("quick-action", 1_usize), cx);
+        window.bounds_changed(cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("quick-copy").is_none(),
+            "old replies must not appear"
+        );
+        assert!(window.find("quick-expand").visible());
+        assert!(window.find("quick-close").bounds().right() <= px(480.));
+    })
+    .unwrap();
+    quick
+        .update(cx, |view, _, cx| {
+            view.agent_states[0].messages.extend([
+                ChatMessage {
+                    id: 2,
+                    role: MessageRole::User,
+                    text: "internal context and prompt".into(),
+                    status: MessageStatus::Complete,
+                    tools: vec![],
+                    metrics: None,
+                },
+                ChatMessage {
+                    id: 3,
+                    role: MessageRole::Assistant,
+                    text: "new answer".into(),
+                    status: MessageStatus::Complete,
+                    tools: vec![],
+                    metrics: None,
+                },
+            ]);
+            cx.notify();
+        })
+        .unwrap();
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("quick-copy", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            "new answer"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn quick_translation_language_changes_real_prompt(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt;
+    use relay_core::capture::Selection;
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let quick = cx.add_window(|window, cx| {
+        let mut view = Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        );
+        view.capture(
+            Selection {
+                text: "selected original".into(),
+                ..Default::default()
+            },
+            Arc::new(PageFetcher),
+            window,
+            cx,
+        );
+        view
+    });
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("quick-action", 2_usize), cx);
+        window.bounds_changed(cx);
+        window.render_frame(cx);
+        window.click("quick-language", cx);
+        window.render_frame(cx);
+        window.click(("quick-target", 1_usize), cx);
+    })
+    .unwrap();
+    let commands = agents.0.lock().unwrap();
+    assert_eq!(commands.len(), 2);
+    assert!(
+        matches!(&commands[1], (_, AgentCommand::Send(text)) if text.contains("English") && text.contains("selected original"))
     );
 }
