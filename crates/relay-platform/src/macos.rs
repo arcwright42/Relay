@@ -1,9 +1,11 @@
 use relay_core::capture::Selection;
 use std::{
+    collections::VecDeque,
     ffi::{c_char, c_void},
     marker::PhantomData,
     ptr,
     rc::Rc,
+    time::{Duration, Instant},
 };
 
 type Ref = *const c_void;
@@ -49,11 +51,25 @@ unsafe extern "C" {
     static kAXTrustedCheckOptionPrompt: Ref;
     fn AXUIElementCreateSystemWide() -> Ref;
     fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
+    fn AXUIElementGetTypeID() -> usize;
+    fn AXUIElementSetAttributeValue(element: Ref, attribute: Ref, value: Ref) -> i32;
+    fn AXUIElementCopyParameterizedAttributeValue(
+        element: Ref,
+        attribute: Ref,
+        parameter: Ref,
+        value: *mut Ref,
+    ) -> i32;
     fn AXUIElementSetMessagingTimeout(element: Ref, seconds: f32) -> i32;
 }
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     fn CFRelease(value: Ref);
+    fn CFRetain(value: Ref) -> Ref;
+    fn CFArrayGetTypeID() -> usize;
+    fn CFArrayGetCount(array: Ref) -> isize;
+    fn CFArrayGetValueAtIndex(array: Ref, index: isize) -> Ref;
+    fn CFURLGetTypeID() -> usize;
+    fn CFURLGetString(url: Ref) -> Ref;
     fn CFGetTypeID(value: Ref) -> usize;
     fn CFStringGetTypeID() -> usize;
     fn CFStringCreateWithCString(allocator: Ref, text: *const c_char, encoding: u32) -> Ref;
@@ -199,12 +215,17 @@ fn attribute(element: &Owned, name: &std::ffi::CStr) -> Option<Owned> {
 fn string(value: Owned) -> Option<String> {
     // SAFETY: check the CF type before using CFString APIs; output is bounded and NUL terminated.
     unsafe {
-        if CFGetTypeID(value.0) != CFStringGetTypeID() {
+        let raw = if CFGetTypeID(value.0) == CFURLGetTypeID() {
+            CFURLGetString(value.0)
+        } else {
+            value.0
+        };
+        if raw.is_null() || CFGetTypeID(raw) != CFStringGetTypeID() {
             return None;
         }
         let mut bytes = vec![0_u8; 128 * 1024];
         if !CFStringGetCString(
-            value.0,
+            raw,
             bytes.as_mut_ptr().cast(),
             bytes.len() as isize,
             0x08000100,
@@ -214,6 +235,92 @@ fn string(value: Owned) -> Option<String> {
         let end = bytes.iter().position(|b| *b == 0)?;
         String::from_utf8(bytes[..end].to_vec()).ok()
     }
+}
+
+// Browser selections may belong to a web area rather than the focused leaf.
+// WebKit exposes text-marker ranges; Chromium can expose the same interface.
+fn selected_text(element: &Owned) -> Option<String> {
+    if attribute(element, c"AXSubrole").and_then(string).as_deref() == Some("AXSecureTextField") {
+        return None;
+    }
+    if let Some(text) = attribute(element, c"AXSelectedText")
+        .and_then(string)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Some(text);
+    }
+    let range = attribute(element, c"AXSelectedTextMarkerRange")?;
+    // SAFETY: retained AX element and marker, valid CFString key and output pointer.
+    unsafe {
+        let key = CFStringCreateWithCString(
+            ptr::null(),
+            c"AXStringForTextMarkerRange".as_ptr(),
+            0x08000100,
+        );
+        if key.is_null() {
+            return None;
+        }
+        let key = Owned(key);
+        let mut value = ptr::null();
+        if AXUIElementCopyParameterizedAttributeValue(element.0, key.0, range.0, &mut value) == 0
+            && !value.is_null()
+        {
+            string(Owned(value)).filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        }
+    }
+}
+fn web_url(element: &Owned) -> Option<String> {
+    [c"AXURL", c"AXDocument"].into_iter().find_map(|key| {
+        attribute(element, key)
+            .and_then(string)
+            .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+    })
+}
+fn children(element: &Owned) -> Vec<Owned> {
+    let Some(array) = attribute(element, c"AXChildren") else {
+        return vec![];
+    };
+    // SAFETY: type-check arrays and child elements before using or retaining them.
+    unsafe {
+        if CFGetTypeID(array.0) != CFArrayGetTypeID() {
+            return vec![];
+        }
+        (0..CFArrayGetCount(array.0).min(128))
+            .filter_map(|index| {
+                let child = CFArrayGetValueAtIndex(array.0, index);
+                (!child.is_null() && CFGetTypeID(child) == AXUIElementGetTypeID())
+                    .then(|| Owned(CFRetain(child)))
+            })
+            .collect()
+    }
+}
+fn browser_selection(window: Owned, deadline: Instant) -> Option<(String, Option<String>)> {
+    let mut queue = VecDeque::from([(window, 0, None)]);
+    for _ in 0..384 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let Some((element, depth, inherited_url)) = queue.pop_front() else {
+            break;
+        };
+        let url = web_url(&element).or(inherited_url);
+        // Never pick a stale selection from an unrelated sidebar or address field.
+        if attribute(&element, c"AXRole").and_then(string).as_deref() == Some("AXWebArea")
+            && let Some(text) = selected_text(&element)
+        {
+            return Some((text, url));
+        }
+        if depth < 12 {
+            queue.extend(
+                children(&element)
+                    .into_iter()
+                    .map(|child| (child, depth + 1, url.clone())),
+            );
+        }
+    }
+    None
 }
 
 /// Run before activating Relay. AX can block, so callers use a background executor.
@@ -233,17 +340,53 @@ pub fn capture_selection() -> Selection {
     unsafe {
         AXUIElementSetMessagingTimeout(system.0, 0.2);
     }
-    if let Some(focus) = attribute(&system, c"AXFocusedUIElement") {
-        selection.text = attribute(&focus, c"AXSelectedText")
-            .and_then(string)
-            .unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_millis(900);
+    let app = attribute(&system, c"AXFocusedApplication");
+    if let Some(app) = &app {
+        selection.application = attribute(app, c"AXTitle").and_then(string);
+        // Request the browser's accessibility tree; unsupported apps ignore this attribute.
+        // SAFETY: the app and key remain retained through this synchronous AX call.
+        unsafe {
+            let key = CFStringCreateWithCString(
+                ptr::null(),
+                c"AXManualAccessibility".as_ptr(),
+                0x08000100,
+            );
+            if !key.is_null() {
+                let key = Owned(key);
+                AXUIElementSetAttributeValue(app.0, key.0, kCFBooleanTrue);
+            }
+        }
     }
-    if let Some(app) = attribute(&system, c"AXFocusedApplication") {
-        selection.application = attribute(&app, c"AXTitle").and_then(string);
-        if let Some(window) = attribute(&app, c"AXFocusedWindow") {
-            selection.url = attribute(&window, c"AXDocument")
-                .and_then(string)
-                .filter(|url| url.starts_with("https://") || url.starts_with("http://"));
+    let mut focus = attribute(&system, c"AXFocusedUIElement");
+    for _ in 0..8 {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let Some(element) = focus else {
+            break;
+        };
+        if selection.text.is_empty() {
+            selection.text = selected_text(&element).unwrap_or_default();
+        }
+        if selection.url.is_none() {
+            selection.url = web_url(&element);
+        }
+        focus = attribute(&element, c"AXParent");
+    }
+    if let Some(app) = app
+        && let Some(window) = attribute(&app, c"AXFocusedWindow")
+    {
+        if selection.url.is_none() {
+            selection.url = web_url(&window);
+        }
+        if selection.text.is_empty()
+            && let Some((text, url)) = browser_selection(window, deadline)
+        {
+            selection.text = text;
+            if url.is_some() {
+                selection.url = url;
+            }
         }
     }
     selection

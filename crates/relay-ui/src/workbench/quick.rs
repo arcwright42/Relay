@@ -86,9 +86,14 @@ impl Workbench {
             message_start: 0,
             questions: Vec::new(),
         });
+        let placeholder = if self.quick.as_ref().unwrap().selection.text.is_empty() {
+            "未读取选区 · 粘贴或提问"
+        } else {
+            "问问 Relay"
+        };
         for draft in &self.drafts {
             draft.update(cx, |draft, cx| {
-                draft.set_placeholder("问问 Relay", window, cx);
+                draft.set_placeholder(placeholder, window, cx);
                 draft.set_submit_on_enter(true, cx)
             });
         }
@@ -452,7 +457,7 @@ impl Workbench {
                                 Button::new("quick-permission")
                                     .ghost()
                                     .small()
-                                    .icon(IconName::Info)
+                                    .label("授权读取")
                                     .tooltip(self.text(Text::QuickAccessibility))
                                     .on_click(
                                         cx.listener(|_, _, _, cx| cx.emit(RequestAccessibility)),
@@ -557,6 +562,10 @@ impl Workbench {
                     .child("→")
                     .child(self.translation_picker(cx)),
             );
+        }
+        if quick.selection.text.is_empty() {
+            body = body.child(div().p(px(10.)).rounded(px(8.)).bg(rgba(0xffe5bfaa))
+                .text_size(px(12.)).child("未读取到选中文字。当前问题不会自动获得你正在看的内容，请粘贴材料或重新选中后按快捷键。"));
         }
         if !quick.selection.text.is_empty() {
             body = body.child(
