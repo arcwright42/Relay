@@ -1,0 +1,18 @@
+[package]
+name = "relay-platform"
+description = "macOS global shortcut and accessibility capture boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+relay-core.workspace = true
+async-channel.workspace = true
+
+# Native FFI is confined to this package; all other packages forbid unsafe code.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"

@@ -58,9 +58,16 @@ fn metadata() -> Result<Value> {
 fn validate_package(package: &Value) -> Result<()> {
     let name = package["name"].as_str().ok_or("Missing package name")?;
     let allowed: &[&str] = match name {
-        "relay" => &["gpui-kit", "relay-ui", "relay-core", "relay-runtime"],
+        "relay" => &[
+            "gpui-kit",
+            "relay-ui",
+            "relay-core",
+            "relay-runtime",
+            "relay-platform",
+        ],
         "relay-ui" => &["gpui-kit", "relay-core"],
         "relay-core" => &[],
+        "relay-platform" => &["relay-core", "async-channel"],
         "relay-runtime" => &[
             "anyhow",
             "relay-core",

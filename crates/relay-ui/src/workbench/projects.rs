@@ -49,8 +49,18 @@ impl Workbench {
                         .placeholder(placeholder)
                         .auto_grow(2, 6)
                 });
-                self._subscriptions
-                    .push(cx.subscribe_in(&draft, window, |_, _, _, _, cx| cx.notify()));
+                self._subscriptions.push(cx.subscribe_in(
+                    &draft,
+                    window,
+                    |this, _, event, window, cx| {
+                        if this.quick.is_some()
+                            && matches!(event, InputEvent::PressEnter { shift: false, .. })
+                        {
+                            this.quick_send(relay_core::capture::QuickAction::Ask, window, cx);
+                        }
+                        cx.notify();
+                    },
+                ));
                 draft
             });
             self.drafts.push(draft);

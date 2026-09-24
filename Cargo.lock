@@ -5870,6 +5870,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "relay-core",
+ "relay-platform",
  "relay-runtime",
  "relay-ui",
 ]
@@ -5889,6 +5890,14 @@ dependencies = [
 [[package]]
 name = "relay-core"
 version = "0.1.0"
+
+[[package]]
+name = "relay-platform"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "relay-core",
+]
 
 [[package]]
 name = "relay-runtime"
