@@ -1,7 +1,7 @@
 //! Render real quick-entry views with fixture replies through Metal, without
 //! desktop automation or a live agent. PNGs are written to the supplied folder.
 use gpui_kit::{
-    assets::Assets,
+    assets::AllAssets,
     component::{Root, Theme, ThemeMode},
     test::TestWindowExt,
     *,
@@ -10,7 +10,7 @@ use relay_core::{Project, ProjectId, agents::*, capture::*, projects::*, routing
 use relay_ui::{ResizeQuick, Workbench};
 use std::sync::{Arc, Mutex};
 
-struct FixtureAgent(Mutex<AgentSnapshot>);
+struct FixtureAgent(Mutex<AgentSnapshot>, bool);
 impl AgentService for FixtureAgent {
     fn revision(&self) -> u64 {
         self.0.lock().unwrap().messages.len() as u64
@@ -20,13 +20,25 @@ impl AgentService for FixtureAgent {
     }
     fn dispatch(&self, _: ProjectId, command: AgentCommand) -> Result<(), String> {
         if let AgentCommand::Send(prompt) = command {
-            self.0.lock().unwrap().messages.extend([
+            let mut state = self.0.lock().unwrap();
+            state.messages.extend([
                 ChatMessage { id: 1, role: MessageRole::User, text: prompt,
                     status: MessageStatus::Complete, tools: vec![], metrics: None },
                 ChatMessage { id: 2, role: MessageRole::Assistant,
                     text: "**GPUI Kit** 是一套 Rust 桌面应用框架。\n\n它提供界面组件、数据管理、布局和文本编辑能力，帮助开发者构建完整的桌面应用。\n\n- **界面**：可直接使用的组件与样式\n- **交互**：输入、选择与编辑\n- **集成**：在同一框架内组织数据和应用逻辑".into(),
                     status: MessageStatus::Complete, tools: vec![], metrics: None },
             ]);
+            if self.1 {
+                state.status = ConnectionStatus::Running;
+                let reply = state.messages.last_mut().unwrap();
+                reply.text.clear();
+                reply.status = MessageStatus::Streaming;
+                reply.tools.push(ToolActivity {
+                    id: "search".into(),
+                    title: "Web search: GPUI Kit".into(),
+                    status: "in_progress".into(),
+                });
+            }
         }
         Ok(())
     }
@@ -88,12 +100,13 @@ fn main() -> gpui_kit::Result<()> {
         ("explain", ConnectionStatus::Ready, 1_usize),
         ("translate", ConnectionStatus::Ready, 2),
         ("search", ConnectionStatus::Ready, 0),
+        ("working", ConnectionStatus::Ready, 0),
         ("disconnected", ConnectionStatus::Disconnected, 0),
         ("error", ConnectionStatus::Failed, 0),
     ] {
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
-            Arc::new(Assets),
+            Arc::new(AllAssets),
             gpui_kit::platform::current_headless_renderer,
         );
         cx.update(|cx| {
@@ -102,11 +115,14 @@ fn main() -> gpui_kit::Result<()> {
         });
         let error = (status == ConnectionStatus::Failed)
             .then(|| "示例：无法读取项目对话文件，请检查日志中的具体原因。".into());
-        let agents = Arc::new(FixtureAgent(Mutex::new(AgentSnapshot {
-            status,
-            error,
-            ..Default::default()
-        })));
+        let agents = Arc::new(FixtureAgent(
+            Mutex::new(AgentSnapshot {
+                status,
+                error,
+                ..Default::default()
+            }),
+            name == "working",
+        ));
         let handle = cx.open_window(size(px(640.),px(54.)), |window,cx| {
             let view = cx.new(|cx| {
                 let mut view = Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), Arc::new(Fixtures), window,cx);
@@ -128,16 +144,34 @@ fn main() -> gpui_kit::Result<()> {
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.find("quick-ask").visible());
+            assert!(
+                window
+                    .find(if name == "working" {
+                        "quick-stop"
+                    } else {
+                        "quick-ask"
+                    })
+                    .visible()
+            );
             assert!(window.find("quick-close").visible());
             if name == "disconnected" || name == "error" {
                 assert!(window.find("quick-connect-codex").visible());
-            } else {
+            } else if name != "working" {
                 assert!(window.try_find("quick-copy").is_some());
             }
         })?;
         cx.capture_screenshot(handle.into())?
             .save(folder.join(format!("{name}.png")))?;
+        if name == "working" {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("quick-options", cx);
+                window.render_frame(cx);
+                assert!(window.find("agent-picker").visible());
+                assert!(window.find("quick-options-settings").visible());
+            })?;
+            cx.capture_screenshot(handle.into())?
+                .save(folder.join("options.png"))?;
+        }
     }
     println!("Rendered previews: {}", folder.display());
     Ok(())

@@ -391,6 +391,14 @@ impl Workbench {
     }
 
     fn quick_input(&self, cx: &mut Context<Self>) -> Div {
+        let status = self
+            .agent_states
+            .get(self.selected_project)
+            .map(|state| &state.status);
+        let running = matches!(
+            status,
+            Some(ConnectionStatus::Running | ConnectionStatus::Cancelling)
+        );
         row()
             .on_mouse_down(MouseButton::Left, |_, window, _| {
                 window.activate_window();
@@ -416,15 +424,110 @@ impl Workbench {
                             .context_menu(crate::locale::input_menu),
                     ),
                 )
-                .child(
-                    Button::new("quick-ask")
-                        .ghost()
-                        .small()
-                        .icon(IconName::ArrowUp)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.quick_send(QuickAction::Ask, window, cx)
-                        })),
-                )
+                .when(!running, |view| {
+                    view.child(
+                        Button::new("quick-ask")
+                            .ghost()
+                            .small()
+                            .icon(IconName::ArrowUp)
+                            .tooltip("发送")
+                            .accessibility_label("发送")
+                            .disabled(status.is_some_and(ConnectionStatus::is_busy))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.quick_send(QuickAction::Ask, window, cx)
+                            })),
+                    )
+                })
+                .when(running, |view| {
+                    view.child(
+                        Button::new("quick-stop")
+                            .ghost()
+                            .small()
+                            .icon(icon(IconName::Square).size(px(14.)))
+                            .tooltip(self.text(Text::StopResponse))
+                            .accessibility_label(self.text(Text::StopResponse))
+                            .disabled(status == Some(&ConnectionStatus::Cancelling))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.agent_action(AgentCommand::Cancel, cx);
+                            })),
+                    )
+                })
+            })
+    }
+
+    fn quick_options(&self, cx: &mut Context<Self>) -> Popover {
+        let weak = cx.entity().downgrade();
+        Popover::new("quick-options-menu")
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new("quick-options")
+                    .ghost()
+                    .small()
+                    .size(px(28.))
+                    .icon(icon(IconName::Ellipsis).size(px(16.)))
+                    .tooltip("项目与模型")
+                    .accessibility_label("项目与模型"),
+            )
+            .content(move |_, _, cx| {
+                weak.update(cx, |this, cx| {
+                    let state = &this.agent_states[this.selected_project];
+                    let quick = this.quick.as_ref().unwrap();
+                    column()
+                        .w(px(270.))
+                        .p(px(10.))
+                        .gap(px(10.))
+                        .child(muted("项目").text_size(px(11.)))
+                        .children(this.projects.iter().enumerate().map(|(index, project)| {
+                            Button::new(("quick-result-project", index))
+                                .ghost()
+                                .small()
+                                .justify_start()
+                                .label(project.name.clone())
+                                .selected(index == this.selected_project)
+                                // Once sent, this panel belongs to its project conversation.
+                                .disabled(quick.sent || state.status.is_busy())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.navigate(Page::Project(index), window, cx)
+                                }))
+                        }))
+                        .child(
+                            row()
+                                .border_t_1()
+                                .border_color(rgb(LINE))
+                                .pt(px(8.))
+                                .child(this.agent_picker(cx)),
+                        )
+                        .child(
+                            Button::new("quick-options-settings")
+                                .ghost()
+                                .small()
+                                .justify_start()
+                                .label(this.text(Text::ManageAgents))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.manage_agents(window, cx)
+                                })),
+                        )
+                        .when(quick.sent, |view| {
+                            view.child(
+                                column()
+                                    .id("quick-tool-details")
+                                    .max_h(px(140.))
+                                    .overflow_y_scroll()
+                                    .gap(px(5.))
+                                    .children(
+                                        state
+                                            .messages
+                                            .iter()
+                                            .skip(quick.message_start)
+                                            .flat_map(|message| &message.tools)
+                                            .map(|tool| {
+                                                muted(tool.title.clone()).text_size(px(11.))
+                                            }),
+                                    ),
+                            )
+                        })
+                })
+                .unwrap_or_else(|_| column())
             })
     }
 
@@ -444,14 +547,17 @@ impl Workbench {
             .small()
             .flex_shrink_0()
             .size(px(28.))
-            .label("×")
-            .text_size(px(20.))
+            .icon(icon(IconName::X).size(px(16.)))
+            .tooltip("关闭")
+            .accessibility_label("关闭")
             .on_click(|_, window, _| window.remove_window());
         let expand = Button::new("quick-expand")
             .ghost()
             .small()
-            .label(self.text(Text::QuickExpand))
-            .text_size(px(12.))
+            .size(px(28.))
+            .icon(icon(IconName::ArrowUpRight).size(px(16.)))
+            .tooltip(self.text(Text::QuickExpand))
+            .accessibility_label(self.text(Text::QuickExpand))
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.emit(OpenProject(
                     this.projects.get(this.selected_project).map(|p| p.id),
@@ -623,31 +729,28 @@ impl Workbench {
         if action == QuickAction::Translate {
             context = context.child(
                 row()
-                    .justify_between()
-                    .p(px(10.))
-                    .rounded(px(10.))
-                    .bg(rgba(0xffffff80))
-                    .child("自动检测")
-                    .child("→")
+                    .gap(px(8.))
+                    .text_size(px(12.))
+                    .child(muted("自动检测 →"))
                     .child(self.translation_picker(cx)),
             );
         }
         if quick.selection.text.is_empty() {
-            context = context.child(div().p(px(10.)).rounded(px(8.)).bg(rgba(0xffe5bfaa))
-                .text_size(px(12.)).child("未读取到选中文字。当前问题不会自动获得你正在看的内容，请粘贴材料或重新选中后按快捷键。"));
+            context = context.child(muted("未读取到选区，可粘贴或直接提问。").text_size(px(12.)));
         }
         if !quick.selection.text.is_empty() {
             context = context.child(
                 div()
                     .id("quick-selection")
                     .flex_shrink_0()
-                    .max_h(px(88.))
+                    .max_h(px(54.))
                     .overflow_y_scroll()
-                    .border_l_2()
-                    .border_color(rgb(0xb6b7bc))
+                    .border_l_1()
+                    .border_color(rgb(0xd4d4d8))
                     .pl(px(10.))
-                    .text_color(rgb(0x656870))
-                    .text_size(px(13.))
+                    .text_color(rgb(0x85858b))
+                    .text_size(px(12.))
+                    .line_height(px(18.))
                     .child(quick.selection.text.clone())
                     .test_support(),
             );
@@ -686,20 +789,15 @@ impl Workbench {
                     }
                     continue;
                 }
-                body = body
-                    .child(
+                if !message.text.is_empty() {
+                    body = body.child(
                         gpui_kit::component::text::TextView::markdown(
                             ("quick-answer", message.id),
                             message.text.clone(),
                         )
                         .selectable(true),
-                    )
-                    .children(
-                        message
-                            .tools
-                            .iter()
-                            .map(|tool| muted(tool.title.clone()).text_size(px(12.))),
                     );
+                }
             }
             if quick.sent
                 && let Some(message) = state
@@ -711,18 +809,18 @@ impl Workbench {
             {
                 let answer = message.text.clone();
                 body = body.child(
-                    Button::new("quick-copy")
-                        .ghost()
-                        .small()
-                        .icon(IconName::Copy)
-                        .label("复制")
-                        .on_click(move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(answer.clone()))
-                        }),
+                    row().justify_end().child(
+                        Button::new("quick-copy")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Copy)
+                            .tooltip("复制回答")
+                            .accessibility_label("复制回答")
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(answer.clone()))
+                            }),
+                    ),
                 );
-            }
-            if busy {
-                body = body.child(muted("正在处理…").text_size(px(12.)));
             }
             if matches!(
                 state.status,
@@ -736,7 +834,6 @@ impl Workbench {
                         .gap(px(10.))
                         .rounded(px(10.))
                         .bg(rgba(0xffffffb3))
-                        .child("连接 Codex 后即可处理选中文字。")
                         .child(
                             row()
                                 .gap(px(8.))
@@ -745,7 +842,7 @@ impl Workbench {
                                     Button::new("quick-manage-agents")
                                         .ghost()
                                         .small()
-                                        .label(self.text(Text::ManageAgents))
+                                        .label("设置")
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.manage_agents(window, cx)
                                         })),
@@ -754,7 +851,7 @@ impl Workbench {
                 );
             }
             if !quick.sent && has_input && state.status == ConnectionStatus::Ready {
-                body = body.child(muted("点击继续发送。")).child(
+                body = body.child(
                     Button::new("quick-continue")
                         .small()
                         .label("继续")
@@ -775,7 +872,7 @@ impl Workbench {
             .child(
                 row()
                     .flex_shrink_0()
-                    .h(px(54.))
+                    .h(px(48.))
                     .px(px(18.))
                     .gap(px(6.))
                     .child(
@@ -783,43 +880,20 @@ impl Workbench {
                             .id("quick-title")
                             .flex_1()
                             .cursor_move()
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(px(17.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(15.))
                             .child(title)
                             .on_mouse_down(MouseButton::Left, |_, window, _| {
                                 window.start_window_move()
                             })
                             .test_support(),
                     )
+                    .when(has_project, |view| view.child(self.quick_options(cx)))
                     .child(expand)
                     .child(close),
             )
             .child(context)
             .child(body.test_support())
-            .when(has_project, |view| {
-                view.child(
-                    row()
-                        .px(px(16.))
-                        .pb(px(6.))
-                        .justify_between()
-                        .child(
-                            muted(self.projects[self.selected_project].name.clone())
-                                .text_size(px(11.)),
-                        )
-                        .child(self.agent_picker(cx))
-                        .when(busy, |view| {
-                            view.child(
-                                Button::new("quick-stop")
-                                    .ghost()
-                                    .small()
-                                    .label("停止")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.agent_action(AgentCommand::Cancel, cx);
-                                    })),
-                            )
-                        }),
-                )
-            })
             .child(
                 row()
                     .id("quick-footer")
