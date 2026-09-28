@@ -35,9 +35,10 @@ actions!(relay, [FocusSearch, SendMessage]);
 
 const INK: u32 = 0x202124;
 const MUTED: u32 = 0x8b8b91;
-const SIDEBAR: u32 = 0xf4f4f5;
+const SIDEBAR: u32 = 0xf7f7f8;
 const LINE: u32 = 0xe8e8eb;
-const SURFACE: u32 = 0xfdfdfd;
+const SURFACE: u32 = 0xffffff;
+const CONTENT_WIDTH: f32 = 720.;
 
 #[track_caller]
 fn row() -> Div {
@@ -47,6 +48,23 @@ fn row() -> Div {
 #[track_caller]
 fn column() -> Div {
     div().flex().flex_col()
+}
+
+fn composer_surface() -> Div {
+    column()
+        .w_full()
+        .p(px(14.))
+        .rounded(px(24.))
+        .border_1()
+        .border_color(rgb(0xe1e1e4))
+        .bg(rgb(SURFACE))
+        .shadow(vec![BoxShadow {
+            inset: false,
+            color: rgba(0x0000000a).into(),
+            offset: point(px(0.), px(2.)),
+            blur_radius: px(8.),
+            spread_radius: px(0.),
+        }])
 }
 
 fn icon(name: IconName) -> Icon {

@@ -860,10 +860,7 @@ impl Workbench {
                         })),
                 );
             }
-            if state.status != ConnectionStatus::Ready
-                || state.error.is_some()
-                || self.agent_errors[self.selected_project].is_some()
-            {
+            if self.needs_connection_notice() {
                 body = body.child(self.connection_notice(cx));
             }
             body = body.child(self.permission_cards(cx));

@@ -1,5 +1,5 @@
-//! Render real quick-entry views with fixture replies through Metal, without
-//! desktop automation or a live agent. PNGs are written to the supplied folder.
+//! Render real views with fixtures through Metal, without desktop automation
+//! or a live agent. Add `--workspace` after the output folder for main app pages.
 use gpui_kit::{
     assets::AllAssets,
     component::{Root, Theme, ThemeMode},
@@ -55,14 +55,18 @@ impl ProjectService for Fixtures {
         ProjectCatalog {
             revision: 1,
             error: None,
-            projects: vec![Project {
-                id: ProjectId(1),
-                revision: 1,
-                name: "Personal".into(),
-                description: String::new(),
-                instructions: String::new(),
-                context: vec![],
-            }],
+            projects: ["Product Design", "Agent Infra", "Personal"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| Project {
+                    id: ProjectId(index as u64 + 1),
+                    revision: 1,
+                    name: name.into(),
+                    description: String::new(),
+                    instructions: String::new(),
+                    context: vec![],
+                })
+                .collect(),
         }
     }
     fn apply(&self, _: ProjectCommand) -> Result<ProjectId, String> {
@@ -96,6 +100,9 @@ fn main() -> gpui_kit::Result<()> {
             .unwrap_or_else(|| "/tmp/relay-quick-preview".into()),
     );
     std::fs::create_dir_all(&folder)?;
+    if std::env::args().any(|arg| arg == "--workspace") {
+        return render_workspace(&folder);
+    }
     for (name, status, action) in [
         ("explain", ConnectionStatus::Ready, 1_usize),
         ("translate", ConnectionStatus::Ready, 2),
@@ -174,5 +181,68 @@ fn main() -> gpui_kit::Result<()> {
         }
     }
     println!("Rendered previews: {}", folder.display());
+    Ok(())
+}
+
+fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
+    for (name, width, height) in [("wide", 1440., 900.), ("compact", 960., 640.)] {
+        let mut cx = HeadlessAppContext::with_platform(
+            gpui_kit::platform::current_platform(true).text_system(),
+            Arc::new(AllAssets),
+            gpui_kit::platform::current_headless_renderer,
+        );
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+        });
+        let agents = Arc::new(FixtureAgent(
+            Mutex::new(AgentSnapshot {
+                status: ConnectionStatus::Ready,
+                ..Default::default()
+            }),
+            false,
+        ));
+        let handle = cx.open_window(size(px(width), px(height)), |window, cx| {
+            let view = cx.new(|cx| {
+                Workbench::new(
+                    agents,
+                    Arc::new(Fixtures),
+                    Arc::new(Fixtures),
+                    Arc::new(Fixtures),
+                    window,
+                    cx,
+                )
+            });
+            cx.new(|cx| Root::new(view, window, cx).bordered(false))
+        })?;
+        for (page, target) in [
+            ("home", ElementId::from("home")),
+            ("project", ElementId::from(("project", 0_usize))),
+            ("agents", ElementId::from("agents")),
+            ("settings", ElementId::from("settings")),
+        ] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click(target, cx);
+            })?;
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.find("home").visible());
+                assert!(window.find("settings").visible());
+                if page == "home" {
+                    assert!(window.find("route-prompt").visible());
+                    assert!(window.find(("home-project", 2_usize)).visible());
+                    assert!(window.try_find("project-members").is_none());
+                } else if page == "project" {
+                    assert!(window.find("send").visible());
+                    assert!(window.find("composer-context").visible());
+                }
+            })?;
+            cx.capture_screenshot(handle.into())?
+                .save(folder.join(format!("{page}-{name}.png")))?;
+        }
+    }
+    println!("Rendered workspace previews: {}", folder.display());
     Ok(())
 }
