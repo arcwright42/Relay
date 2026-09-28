@@ -11,3 +11,8 @@ mod panel;
 mod placement;
 #[cfg(target_os = "macos")]
 pub use panel::{QUICK_PANEL_TITLE, configure_quick_panel, quick_origin, resize_quick_panel};
+
+#[cfg(target_os = "macos")]
+mod dismiss;
+#[cfg(target_os = "macos")]
+pub use dismiss::QuickDismissMonitor;

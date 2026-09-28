@@ -70,6 +70,7 @@ fn validate_package(package: &Value) -> Result<()> {
         "relay-platform" => &[
             "relay-core",
             "async-channel",
+            "block2",
             "objc2",
             "objc2-app-kit",
             "objc2-foundation",

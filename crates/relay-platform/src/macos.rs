@@ -24,6 +24,9 @@ struct HotKeyId {
 
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
+    fn TISCopyCurrentKeyboardInputSource() -> Ref;
+    fn TISGetInputSourceProperty(source: Ref, property: Ref) -> Ref;
+    static kTISPropertyBundleID: Ref;
     fn GetApplicationEventTarget() -> MutRef;
     fn InstallEventHandler(
         target: MutRef,
@@ -67,6 +70,10 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn CFRelease(value: Ref);
     fn CFRetain(value: Ref) -> Ref;
+    fn CFDictionaryGetTypeID() -> usize;
+    fn CFDictionaryGetValue(dictionary: Ref, key: Ref) -> Ref;
+    fn CFNumberGetTypeID() -> usize;
+    fn CFNumberGetValue(number: Ref, kind: i32, value: *mut c_void) -> bool;
     fn CFArrayGetTypeID() -> usize;
     fn CFArrayGetCount(array: Ref) -> isize;
     fn CFArrayGetValueAtIndex(array: Ref, index: isize) -> Ref;
@@ -460,6 +467,8 @@ struct Point {
 }
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
+    fn CGWindowListCopyWindowInfo(options: u32, relative_window: u32) -> Ref;
+    static kCGWindowOwnerPID: Ref;
     fn CGEventCreate(source: Ref) -> Ref;
     fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
     fn CGEventSetFlags(event: Ref, flags: u64);
@@ -641,5 +650,91 @@ impl Drop for CaptureDiagnostics {
                 let _ = std::fs::write(directory.join("selection-latest.log"), lines.join("\n"));
             }
         }
+    }
+}
+
+/// Candidate windows belong to an input-method process, not Relay. Inspect only
+/// the hit window's owner PID (no window titles or screenshots are requested).
+pub(super) fn is_input_method_window(number: isize) -> bool {
+    use objc2_app_kit::NSRunningApplication;
+    let Ok(number) = u32::try_from(number) else {
+        return false;
+    };
+    // SAFETY: copied CF objects are owned; borrowed dictionary/property values
+    // are type-checked before use, and retained before conversion to Rust text.
+    unsafe {
+        let info = CGWindowListCopyWindowInfo(1 << 3, number); // IncludingWindow
+        if info.is_null() {
+            return false;
+        }
+        let info = Owned(info);
+        if CFGetTypeID(info.0) != CFArrayGetTypeID() || CFArrayGetCount(info.0) != 1 {
+            return false;
+        }
+        let entry = CFArrayGetValueAtIndex(info.0, 0);
+        if entry.is_null() || CFGetTypeID(entry) != CFDictionaryGetTypeID() {
+            return false;
+        }
+        let owner = CFDictionaryGetValue(entry, kCGWindowOwnerPID);
+        if owner.is_null() || CFGetTypeID(owner) != CFNumberGetTypeID() {
+            return false;
+        }
+        let mut pid: i32 = 0;
+        if !CFNumberGetValue(owner, 3, (&mut pid as *mut i32).cast()) {
+            return false;
+        } // SInt32
+        let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {
+            return false;
+        };
+        let Some(bundle) = app.bundleIdentifier() else {
+            return false;
+        };
+        let source = TISCopyCurrentKeyboardInputSource();
+        if source.is_null() {
+            return false;
+        }
+        let source = Owned(source);
+        let source_bundle = TISGetInputSourceProperty(source.0, kTISPropertyBundleID);
+        if source_bundle.is_null() {
+            return false;
+        }
+        let Some(input_bundle) = string(Owned(CFRetain(source_bundle))) else {
+            return false;
+        };
+        input_method_owner_matches(&bundle.to_string(), &input_bundle)
+    }
+}
+fn input_method_owner_matches(owner: &str, input: &str) -> bool {
+    !input.is_empty()
+        && !input.starts_with("com.apple.keylayout.")
+        && (owner == input || owner == "com.apple.inputmethodkit.TextInputHost")
+}
+
+#[cfg(test)]
+mod dismissal_tests {
+    use super::input_method_owner_matches;
+    #[test]
+    fn candidate_owner_must_match_the_active_input_method() {
+        assert!(input_method_owner_matches(
+            "com.apple.inputmethod.SCIM",
+            "com.apple.inputmethod.SCIM"
+        ));
+        assert!(input_method_owner_matches(
+            "com.apple.inputmethodkit.TextInputHost",
+            "com.apple.inputmethod.SCIM"
+        ));
+        assert!(input_method_owner_matches(
+            "com.example.ime",
+            "com.example.ime"
+        ));
+        assert!(!input_method_owner_matches(
+            "com.google.Chrome",
+            "com.apple.inputmethod.SCIM"
+        ));
+        assert!(!input_method_owner_matches(
+            "com.apple.inputmethodkit.TextInputHost",
+            "com.apple.keylayout.ABC"
+        ));
+        assert!(!input_method_owner_matches("", ""));
     }
 }

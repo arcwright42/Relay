@@ -21,6 +21,7 @@ struct Desktop {
     workspace: Option<(WindowHandle<Root>, Entity<Workbench>)>,
     quick: Option<(WindowHandle<Root>, Entity<Workbench>)>,
     shortcut_error: Option<String>,
+    quick_dismiss: Option<relay_platform::QuickDismissMonitor>,
 }
 impl Global for Desktop {}
 
@@ -48,7 +49,10 @@ fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
         .and_then(|(_, view)| view.read(cx).current_project());
     // A fresh capture starts a fresh toolbar, at the current selection's location.
     if let Some((handle, _)) = cx.global::<Desktop>().quick.clone() {
-        let _ = handle.update(cx, |_, window, _| window.remove_window());
+        let _ = handle.update(cx, |_, window, _| {
+            window.set_window_title("Relay Quick Closing");
+            window.remove_window();
+        });
     }
     open_window(true, selection, project, anchor, cx);
 }
@@ -167,6 +171,19 @@ fn open_window(
             let desktop = cx.global_mut::<Desktop>();
             if quick {
                 desktop.quick = entry;
+                desktop.quick_dismiss = None;
+                if let Some((monitor, receiver)) = relay_platform::QuickDismissMonitor::install() {
+                    desktop.quick_dismiss = Some(monitor);
+                    cx.spawn(async move |cx| {
+                        if receiver.recv().await.is_ok() {
+                            // Bound to this handle: a delayed click cannot close a newer panel.
+                            let _ = handle.update(cx, |_, window, _| window.remove_window());
+                        }
+                    })
+                    .detach();
+                } else {
+                    eprintln!("Could not install quick-panel outside-click monitors");
+                }
             } else {
                 desktop.workspace = entry;
             }
@@ -205,6 +222,7 @@ fn main() {
             workspace: None,
             quick: None,
             shortcut_error: shortcut.as_ref().err().cloned(),
+            quick_dismiss: None,
         });
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
@@ -254,6 +272,7 @@ fn main() {
                 .is_some_and(|(handle, _)| handle.window_id() == closed)
             {
                 desktop.quick = None;
+                desktop.quick_dismiss = None;
             }
         })
         .detach();

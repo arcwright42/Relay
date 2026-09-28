@@ -65,6 +65,14 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.quick.is_none() {
+            self._subscriptions
+                .push(cx.observe_window_activation(window, |_, window, _| {
+                    if !window.is_window_active() {
+                        window.remove_window();
+                    }
+                }));
+        }
         let generation = self.quick.as_ref().map_or(1, |quick| quick.generation + 1);
         let url = selection.url.clone();
         self.quick = Some(QuickEntry {

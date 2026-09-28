@@ -1112,3 +1112,58 @@ fn quick_empty_action_opens_and_ime_must_commit_before_send(cx: &mut TestAppCont
         matches!(&commands[0], (_, AgentCommand::Send(text)) if text.contains("你好") && text.contains("翻译") && !text.contains("nihao"))
     );
 }
+
+#[gpui_kit::test]
+fn quick_dismisses_on_focus_loss_without_closing_workspace_or_sending(cx: &mut TestAppContext) {
+    use relay_core::capture::Selection;
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let workspace = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    let quick = cx.add_window(|window, cx| {
+        let mut view = Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        );
+        view.capture(
+            Selection {
+                text: "selected browser text".into(),
+                ..Default::default()
+            },
+            Arc::new(PageFetcher),
+            window,
+            cx,
+        );
+        view
+    });
+    quick
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        quick.update(cx, |_, _, _| ()).is_ok(),
+        "focus within quick panel must keep it open"
+    );
+    workspace
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        quick.update(cx, |_, _, _| ()).is_err(),
+        "clicking another Relay window must dismiss quick panel"
+    );
+    assert!(workspace.update(cx, |_, _, _| ()).is_ok());
+    assert!(agents.0.lock().unwrap().is_empty());
+}

@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 relay-core.workspace = true
 async-channel.workspace = true
+block2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
