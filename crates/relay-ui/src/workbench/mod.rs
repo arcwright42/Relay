@@ -5,7 +5,7 @@ mod navigation;
 mod pages;
 mod projects;
 mod quick;
-pub use quick::{OpenProject, RequestAccessibility};
+pub use quick::{OpenProject, RequestAccessibility, ResizeQuick};
 mod routing;
 #[cfg(test)]
 mod tests;

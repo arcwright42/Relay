@@ -5,6 +5,9 @@ use relay_core::{
     capture::{FetchState, QuickAction, Selection, WebFetchService, compose},
 };
 
+pub struct ResizeQuick(pub Size<Pixels>);
+impl EventEmitter<ResizeQuick> for Workbench {}
+
 pub struct OpenProject(pub Option<ProjectId>);
 impl EventEmitter<OpenProject> for Workbench {}
 pub struct RequestAccessibility;
@@ -152,7 +155,7 @@ impl Workbench {
         }
         if self.quick.as_ref().unwrap().action.is_none() {
             self.quick.as_mut().unwrap().action = Some(action);
-            window.resize(size(
+            cx.emit(ResizeQuick(size(
                 px(if action == QuickAction::Search {
                     520.
                 } else {
@@ -163,7 +166,7 @@ impl Workbench {
                     QuickAction::Translate => 460.,
                     _ => 580.,
                 }),
-            ));
+            )));
         }
         if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
             self.picker_open = true;
@@ -442,13 +445,13 @@ impl Workbench {
                                 .ghost()
                                 .small()
                                 .icon(IconName::ChevronDown)
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     let quick = this.quick.as_mut().unwrap();
                                     quick.more = !quick.more;
-                                    window.resize(size(
+                                    cx.emit(ResizeQuick(size(
                                         px(640.),
                                         px(if quick.more { 310. } else { 54. }),
-                                    ));
+                                    )));
                                     cx.notify();
                                 })),
                         )

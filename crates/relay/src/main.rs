@@ -3,8 +3,8 @@ use gpui_kit::*;
 use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
 use relay_runtime::{AgentRuntime, JevRouter, MoliFetcher, ProjectStore, SettingsStore};
 use relay_ui::{
-    FocusSearch, OpenProject, OpenQuick, OpenWorkspace, Quit, RequestAccessibility, SendMessage,
-    Workbench, apply_language,
+    FocusSearch, OpenProject, OpenQuick, OpenWorkspace, Quit, RequestAccessibility, ResizeQuick,
+    SendMessage, Workbench, apply_language,
 };
 use std::sync::Arc;
 
@@ -38,9 +38,9 @@ fn open_workspace(project: Option<ProjectId>, cx: &mut App) {
         cx.activate(true);
         return;
     }
-    open_window(false, Selection::default(), project, cx);
+    open_window(false, Selection::default(), project, None, cx);
 }
-fn open_quick(selection: Selection, cx: &mut App) {
+fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
     let project = cx
         .global::<Desktop>()
         .workspace
@@ -50,9 +50,15 @@ fn open_quick(selection: Selection, cx: &mut App) {
     if let Some((handle, _)) = cx.global::<Desktop>().quick.clone() {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
     }
-    open_window(true, selection, project, cx);
+    open_window(true, selection, project, anchor, cx);
 }
-fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx: &mut App) {
+fn open_window(
+    quick: bool,
+    selection: Selection,
+    project: Option<ProjectId>,
+    anchor: Option<(f32, f32)>,
+    cx: &mut App,
+) {
     let services = cx.global::<Desktop>().services.clone();
     let shortcut_error = cx.global::<Desktop>().shortcut_error.clone();
     let mut bounds = Bounds::centered(
@@ -65,27 +71,17 @@ fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx
         cx,
     );
     let mut display_id = None;
-    if quick && let Some((x, y)) = relay_platform::pointer_position() {
+    if quick && let Some((x, y)) = anchor {
         let pointer = point(px(x), px(y));
         if let Some(display) = cx
             .displays()
             .into_iter()
             .find(|d| d.bounds().contains(&pointer))
         {
-            let screen = display.bounds();
             display_id = Some(display.id());
-            // Reserve room below for the result panel and keep the toolbar on screen.
-            bounds.origin = point(
-                px(x).clamp(
-                    screen.left() + px(8.),
-                    (screen.right() - bounds.size.width - px(8.)).max(screen.left() + px(8.)),
-                ),
-                px(y + 16.).clamp(
-                    screen.top() + px(30.),
-                    (screen.bottom() - px(590.)).max(screen.top() + px(30.)),
-                ),
-            );
-            bounds.origin -= screen.origin;
+            if let Some((left, top)) = relay_platform::quick_origin((x, y), 640., 54.) {
+                bounds.origin = point(px(left), px(top)) - display.bounds().origin;
+            }
         }
     }
     let mut view_handle = None;
@@ -118,6 +114,9 @@ fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx
             ..Default::default()
         },
         |window, cx| {
+            if quick {
+                window.set_window_title(relay_platform::QUICK_PANEL_TITLE);
+            }
             let view = cx.new(|cx| {
                 let mut view = Workbench::new(
                     services.agents,
@@ -147,6 +146,10 @@ fn open_window(quick: bool, selection: Selection, project: Option<ProjectId>, cx
                 cx.open_url(
                     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
                 );
+            })
+            .detach();
+            cx.subscribe(&view, |_, event: &ResizeQuick, _| {
+                relay_platform::resize_quick_panel(event.0.width.as_f32(), event.0.height.as_f32());
             })
             .detach();
             view_handle = Some(view.clone());
@@ -213,7 +216,9 @@ fn main() {
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &OpenWorkspace, cx| open_workspace(None, cx));
         // The menu is a manual/paste entry; it must not capture Relay's own selection.
-        cx.on_action(|_: &OpenQuick, cx| open_quick(Selection::default(), cx));
+        cx.on_action(|_: &OpenQuick, cx| {
+            open_quick(Selection::default(), relay_platform::pointer_position(), cx)
+        });
         cx.on_app_quit(move |cx| {
             let fetcher = shutdown_fetcher.clone();
             cx.background_executor().spawn(async move {
@@ -258,18 +263,19 @@ fn main() {
             let executor = cx.background_executor().clone();
             cx.spawn(async move |cx| {
                 while shortcut.next_trigger().await {
+                    let anchor = relay_platform::pointer_position();
                     let selection = executor
                         .spawn(async { relay_platform::capture_selection() })
                         .await;
                     shortcut.discard_pending();
-                    cx.update(|cx| open_quick(selection, cx));
+                    cx.update(|cx| open_quick(selection, anchor, cx));
                 }
             })
             .detach();
         }
         open_workspace(None, cx);
         if cx.global::<Desktop>().shortcut_error.is_some() {
-            open_quick(Selection::default(), cx);
+            open_quick(Selection::default(), relay_platform::pointer_position(), cx);
         }
     });
 }

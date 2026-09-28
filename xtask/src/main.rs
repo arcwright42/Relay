@@ -67,7 +67,13 @@ fn validate_package(package: &Value) -> Result<()> {
         ],
         "relay-ui" => &["gpui-kit", "relay-core"],
         "relay-core" => &[],
-        "relay-platform" => &["relay-core", "async-channel"],
+        "relay-platform" => &[
+            "relay-core",
+            "async-channel",
+            "objc2",
+            "objc2-app-kit",
+            "objc2-foundation",
+        ],
         "relay-runtime" => &[
             "anyhow",
             "relay-core",

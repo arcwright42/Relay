@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`relay-platform`、`gpui-kit` |
 | `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
-| `relay-platform` | macOS 全局快捷键与辅助功能选区采集 | `relay-core`、`async-channel` |
+| `relay-platform` | macOS 全局快捷键、辅助功能选区采集与原生浮窗定位 | `relay-core`、`async-channel`、`objc2`、`objc2-app-kit`、`objc2-foundation` |
 | `relay-core` | 项目、资料、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
 | `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |

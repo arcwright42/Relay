@@ -949,6 +949,15 @@ fn quick_toolbar_fits_and_result_hides_previous_conversation(cx: &mut TestAppCon
         });
         view
     });
+    quick
+        .update(cx, |view, window, cx| {
+            view._subscriptions.push(cx.subscribe_in(
+                &cx.entity(),
+                window,
+                |_, _, event: &super::ResizeQuick, window, _| window.resize(event.0),
+            ));
+        })
+        .unwrap();
     cx.simulate_window_resize(quick.into(), size(px(640.), px(54.)));
     cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -959,6 +968,7 @@ fn quick_toolbar_fits_and_result_hides_previous_conversation(cx: &mut TestAppCon
             assert!(button.bounds().right() <= px(640.));
         }
         window.click(("quick-action", 1_usize), cx);
+        window.resize(gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(460.)));
         window.bounds_changed(cx);
         window.render_frame(cx);
         assert!(
@@ -1029,9 +1039,19 @@ fn quick_translation_language_changes_real_prompt(cx: &mut TestAppContext) {
         );
         view
     });
+    quick
+        .update(cx, |view, window, cx| {
+            view._subscriptions.push(cx.subscribe_in(
+                &cx.entity(),
+                window,
+                |_, _, event: &super::ResizeQuick, window, _| window.resize(event.0),
+            ));
+        })
+        .unwrap();
     cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("quick-action", 2_usize), cx);
+        window.resize(gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(460.)));
         window.bounds_changed(cx);
         window.render_frame(cx);
         window.click("quick-language", cx);
