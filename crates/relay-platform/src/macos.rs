@@ -115,6 +115,7 @@ pub fn request_accessibility() {
 }
 
 extern "C" fn hotkey(_: MutRef, _: MutRef, data: MutRef) -> i32 {
+    eprintln!("quick: native shortcut received");
     // SAFETY: registration retains this boxed sender until after the handler is removed.
     let sender = unsafe { &*data.cast::<async_channel::Sender<()>>() };
     let _ = sender.try_send(());
@@ -182,6 +183,7 @@ impl Shortcut {
                 return Err(format!("Control + Option + Space unavailable ({status})"));
             }
         }
+        eprintln!("quick: shortcut registered successfully");
         Ok(Self {
             key,
             handler,
@@ -352,10 +354,12 @@ fn browser_selection(window: Owned, deadline: Instant) -> Option<(String, Option
 
 /// Run before activating Relay. AX can block, so callers use a background executor.
 pub fn capture_selection(source_pid: Option<i32>) -> Selection {
+    eprintln!("quick: capture started source_pid={source_pid:?}");
     let _diagnostics = CaptureDiagnostics::start(source_pid);
     let mut selection = Selection::default();
     // SAFETY: API has no pointer parameters and is safe to query from a worker.
     if !unsafe { AXIsProcessTrusted() } {
+        eprintln!("quick: capture denied by accessibility permission");
         diagnostic("permission=denied".into());
         selection.accessibility_missing = true;
         return selection;
@@ -370,6 +374,7 @@ pub fn capture_selection(source_pid: Option<i32>) -> Selection {
         AXUIElementSetMessagingTimeout(system.0, 0.2);
     }
     let deadline = Instant::now() + Duration::from_millis(900);
+    eprintln!("quick: capture accessibility permission granted");
     diagnostic("permission=granted".into());
     let app = source_pid
         .and_then(|pid| {

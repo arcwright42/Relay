@@ -100,3 +100,12 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 ### 点击外部收起（2026-09-28）
 
 补齐 EasyDict 的 local/global 鼠标监听与窗口失焦关闭。未激活工具条也能响应外部点击；用 AppKit 窗口编号命中判断避开多屏坐标误差。点击浮窗本身、其原生子窗口或当前输入法候选窗不作为外部点击，原点击继续传给目标。监听与具体窗口绑定，关闭时释放；迟到关闭事件不作用于新窗口。完整链路对照见 [EasyDict 桌面交互对照](EASYDICT-DESKTOP-REVIEW.md)。
+
+
+### 连续唤起诊断（2026-09-28）
+
+在用户现场日志中，连续快捷键均已收到，且每次都走到新窗口创建；这与快捷键注册失败不同。GPUI 的 `focus=false` 使用普通 `orderFront`，故在 root、位置及 Space 配置完成后显式调用 `orderFrontRegardless`，保证 Relay 非前台时仍请求将工具条置前，同时保留点击外部收起。
+
+加入快捷键注册/接收、取词开始/完成、窗口创建/关闭、外部点击与焦点状态的 stderr 诊断；仅记录 PID、字符数和窗口状态，不记录选中文字内容。通过 `open --stdout ... --stderr ... Relay.app` 可将实际应用进程的诊断写入文件。
+
+现场授权故障曾由 TCC 日志确认：历史 ad-hoc `cdhash` 与 Developer ID 签名要求不匹配。只对 Relay 执行 `tccutil reset Accessibility com.arcwright42.relay`，用户重新授权后，Relay 已报告 trusted=true，Chrome 连续取词得到 56 字符。这证明该次取词成功，不代表所有浏览器均已验收。连续弹出仍以用户可见结果为准。

@@ -42,6 +42,11 @@ fn open_workspace(project: Option<ProjectId>, cx: &mut App) {
     open_window(false, Selection::default(), project, None, cx);
 }
 fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
+    eprintln!(
+        "quick: opening panel selection_chars={} permission_missing={}",
+        selection.text.chars().count(),
+        selection.accessibility_missing
+    );
     let project = cx
         .global::<Desktop>()
         .workspace
@@ -170,12 +175,15 @@ fn open_window(
             let entry = Some((handle, view_handle.expect("window view")));
             let desktop = cx.global_mut::<Desktop>();
             if quick {
+                relay_platform::show_quick_panel();
+                eprintln!("quick: panel opened {:?}", handle.window_id());
                 desktop.quick = entry;
                 desktop.quick_dismiss = None;
                 if let Some((monitor, receiver)) = relay_platform::QuickDismissMonitor::install() {
                     desktop.quick_dismiss = Some(monitor);
                     cx.spawn(async move |cx| {
                         if receiver.recv().await.is_ok() {
+                            eprintln!("quick: outside-click dismissal {:?}", handle.window_id());
                             // Bound to this handle: a delayed click cannot close a newer panel.
                             let _ = handle.update(cx, |_, window, _| window.remove_window());
                         }
@@ -258,6 +266,7 @@ fn main() {
         .detach();
         // Deliberately keep the application alive when the last window closes.
         cx.on_window_closed(|cx, closed| {
+            eprintln!("quick: window closed {closed:?}");
             let desktop = cx.global_mut::<Desktop>();
             if desktop
                 .workspace
@@ -280,11 +289,16 @@ fn main() {
             let executor = cx.background_executor().clone();
             cx.spawn(async move |cx| {
                 while shortcut.next_trigger().await {
+                    eprintln!("quick: trigger dequeued");
                     let anchor = relay_platform::pointer_position();
                     let source_pid = relay_platform::frontmost_process();
                     let selection = executor
                         .spawn(async move { relay_platform::capture_selection(source_pid) })
                         .await;
+                    eprintln!(
+                        "quick: capture completed chars={}",
+                        selection.text.chars().count()
+                    );
                     shortcut.discard_pending();
                     cx.update(|cx| open_quick(selection, anchor, cx));
                 }

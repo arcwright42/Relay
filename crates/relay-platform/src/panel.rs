@@ -105,3 +105,24 @@ pub fn configure_quick_panel() {
         }
     }
 }
+
+/// A global shortcut is invoked while another app is active. GPUI's ordinary
+/// orderFront does not guarantee front ordering in that case; do this only
+/// after the root view, placement and collection behavior have been configured.
+pub fn show_quick_panel() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    for window in NSApplication::sharedApplication(mtm).windows().iter() {
+        if window.title().to_string() == QUICK_PANEL_TITLE {
+            window.orderFrontRegardless();
+            eprintln!(
+                "quick: native panel number={} visible={} level={} frame={:?}",
+                window.windowNumber(),
+                window.isVisible(),
+                window.level(),
+                window.frame()
+            );
+        }
+    }
+}

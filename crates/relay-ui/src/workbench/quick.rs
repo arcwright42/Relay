@@ -68,6 +68,7 @@ impl Workbench {
         if self.quick.is_none() {
             self._subscriptions
                 .push(cx.observe_window_activation(window, |_, window, _| {
+                    eprintln!("quick: focus changed active={}", window.is_window_active());
                     if !window.is_window_active() {
                         window.remove_window();
                     }
