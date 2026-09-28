@@ -1,6 +1,6 @@
 use crate::placement::Rect;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSScreen};
+use objc2_app_kit::{NSApplication, NSPanel, NSScreen};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 #[derive(Debug)]
@@ -89,7 +89,7 @@ pub fn resize_quick_panel(width: f32, height: f32) {
     }
 }
 
-/// Keep the IME-capable floating panel available over full-screen browser spaces.
+/// Configure a nonactivating NSPanel as an overlay across applications/spaces.
 pub fn configure_quick_panel() {
     use objc2_app_kit::NSWindowCollectionBehavior;
     let Some(mtm) = MainThreadMarker::new() else {
@@ -97,10 +97,19 @@ pub fn configure_quick_panel() {
     };
     for window in NSApplication::sharedApplication(mtm).windows().iter() {
         if window.title().to_string() == QUICK_PANEL_TITLE {
+            // GPUI PopUp supplies NonactivatingPanel at construction, but its
+            // default level (101) is too high for input-method candidate windows.
+            window.setLevel(3); // NSFloatingWindowLevel
+            if let Some(panel) = window.downcast_ref::<NSPanel>() {
+                panel.setFloatingPanel(true);
+            }
             window.setHidesOnDeactivate(false);
             window.setCollectionBehavior(
                 NSWindowCollectionBehavior::CanJoinAllSpaces
-                    | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary
+                    | NSWindowCollectionBehavior::CanJoinAllApplications
+                    | NSWindowCollectionBehavior::Transient
+                    | NSWindowCollectionBehavior::IgnoresCycle,
             );
         }
     }
@@ -117,11 +126,14 @@ pub fn show_quick_panel() {
         if window.title().to_string() == QUICK_PANEL_TITLE {
             window.orderFrontRegardless();
             eprintln!(
-                "quick: native panel number={} visible={} level={} frame={:?}",
+                "quick: native panel number={} visible={} level={} frame={:?} active_space={} occlusion={:?} style={:?}",
                 window.windowNumber(),
                 window.isVisible(),
                 window.level(),
-                window.frame()
+                window.frame(),
+                window.isOnActiveSpace(),
+                window.occlusionState(),
+                window.styleMask()
             );
         }
     }

@@ -8,8 +8,8 @@
 | 触发判断 | `TriggerEvaluator`、`EventMonitor` 区分拖选、双击、三击、Shift、Cmd+A；Cmd+A 延迟读取，避免选区尚未更新 | 仍按首版范围使用快捷键触发，不因监听外部点击而新增自动划词 |
 | 来源与取词 | `AppContextProvider`、`SelectionWorkflow`、SelectedTextKit `AXManager` 固定前台 PID 后查询应用内焦点，再读取选区；浏览器和强制取词另有回退 | 上次已固定 PID、读取 AX 文本/标记范围并补快捷键复制回退；浏览器 AppleScript 与菜单 Copy 尚未接入。不能因 EasyDict 成功就推断 Relay 的权限也有效 |
 | 剪贴板 | SelectedTextKit `PasteboardManager` 备份多格式，等待 changeCount 与有效文本，并防止覆盖后续写入 | 已有多格式备份、变化检查和来源检查；原生浏览器行为尚待实机验收，未宣称与该库全部等价 |
-| 窗口类型 | `EZPopButtonWindow` 不成为 key/main；`EZBaseQueryWindow` 的非主窗口采用 nonactivating panel，可成为 key；避免过高层级遮挡系统 UI | Relay 将输入与动作放在同一窗口，使用 GPUI Floating、按点击激活输入。不是照搬 EasyDict 两种窗口的配置 |
-| 输入焦点 | `EZWindowManager` 先 `makeKeyAndOrderFront`，再 focus 文本框；顺序错误会导致首次无法输入 | 已在点输入区时激活；保留组合输入提交保护。本次额外识别当前输入法所属候选窗，不能将候选字点击当作外部点击 |
+| 窗口类型 | `EZPopButtonWindow` 不成为 key/main；`EZBaseQueryWindow` 的非主窗口采用 nonactivating panel，可成为 key；避免过高层级遮挡系统 UI | Relay 将输入与动作放在同一窗口，使用 GPUI PopUp 在构造时设置 NonactivatingPanel，再将原生层级从 101 降到 3，设置 floatingPanel 并允许加入其他应用的 Space。点击时仅使面板成为 key，不激活整个 Relay 应用 |
+| 输入焦点 | `EZWindowManager` 先 `makeKeyAndOrderFront`，再 focus 文本框；顺序错误会导致首次无法输入 | 已在点输入区时使面板成为 key；保留组合输入提交保护。本次额外识别当前输入法所属候选窗，不能将候选字点击当作外部点击 |
 | 外部点击 | `EventMonitor.dismissWindowsIfMouseLocationOutsideFloatingWindow` 使用 NSWindow 的窗口编号命中测试，不用跨坐标系 frame.contains | 本次补齐。local 事件先识别当前窗口及原生子窗口；global 事件使用同一 AppKit 命中测试，支持未激活工具条与不同屏幕 |
 | 失焦与关闭 | `EZBaseQueryWindow.windowDidResignKey` 收起未固定的非主窗口；`EZWindowManager` 区分固定窗口、主窗口和来源应用 | 本次补齐 quick 窗口失焦关闭。工作台保持；点击原目标不主动抢回工作台焦点。Relay 暂无固定浮窗功能 |
 | 生命周期 | `EventMonitorEngine.stop` 注销两个 monitor；临时高频监听只在浮标出现时启用 | RAII 管理监听。异步关闭绑定捕获时的窗口 handle，旧回调不能关闭新浮窗。替换时取消旧原生标题标识，避免误认待销毁窗口 |

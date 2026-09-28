@@ -109,3 +109,10 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 加入快捷键注册/接收、取词开始/完成、窗口创建/关闭、外部点击与焦点状态的 stderr 诊断；仅记录 PID、字符数和窗口状态，不记录选中文字内容。通过 `open --stdout ... --stderr ... Relay.app` 可将实际应用进程的诊断写入文件。
 
 现场授权故障曾由 TCC 日志确认：历史 ad-hoc `cdhash` 与 Developer ID 签名要求不匹配。只对 Relay 执行 `tccutil reset Accessibility com.arcwright42.relay`，用户重新授权后，Relay 已报告 trusted=true，Chrome 连续取词得到 56 字符。这证明该次取词成功，不代表所有浏览器均已验收。连续弹出仍以用户可见结果为准。
+
+
+### 非激活面板与其他应用的 Space（2026-09-28）
+
+`orderFrontRegardless` 调整后用户仍报告不可见，故不能把普通前置排序当作已验证根因。原生日志确认窗口已 order-in、位置落在副屏，但这不等于当前 Space 中可见。按 EasyDict 面板模型改用构造时即带 NonactivatingPanel 的 GPUI PopUp；原生级别降到 NSFloatingWindowLevel（3），避免 GPUI 默认 PopUp 级别（101）遮住输入法候选窗。设置 floatingPanel、CanJoinAllApplications、CanJoinAllSpaces、FullScreenAuxiliary、Transient 和 IgnoresCycle。点击输入只 makeKey，不激活整个 Relay，避免将工作台 Space 一起带到前台。诊断增加 active_space、occlusion、style。实际显示效果仍待用户确认，不把 isVisible=true 当作验收成功。
+
+用户确认本次非激活面板版本能够显示；当前剩余失败样本来自 VS Code，AX 返回空选区，权限已获准。Chrome 此前已有 AX 成功样本，需分别处理应用兼容性。

@@ -19,7 +19,7 @@ futures-lite = "=2.6.1"
 gpui-kit = "=0.6.6"
 block2 = "=0.6.2"
 objc2 = "=0.6.4"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSScreen", "NSResponder", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication", "libc", "NSEvent", "block2"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSPanel", "NSScreen", "NSResponder", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication", "libc", "NSEvent", "block2"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSGeometry", "NSEnumerator", "NSData"] }
 relay-acp = { path = "crates/relay-acp", version = "=0.1.0" }
 relay-core = { path = "crates/relay-core", version = "=0.1.0" }

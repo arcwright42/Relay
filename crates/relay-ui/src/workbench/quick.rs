@@ -185,7 +185,6 @@ impl Workbench {
         if missing_input {
             let focus = self.drafts[self.selected_project].read(cx).focus_handle(cx);
             window.activate_window();
-            cx.activate(true);
             window.focus(&focus, cx);
             cx.notify();
             return;
@@ -357,8 +356,7 @@ impl Workbench {
 
     fn quick_input(&self, cx: &mut Context<Self>) -> Div {
         row()
-            .on_mouse_down(MouseButton::Left, |_, window, cx| {
-                cx.activate(true);
+            .on_mouse_down(MouseButton::Left, |_, window, _| {
                 window.activate_window();
             })
             .flex_1()

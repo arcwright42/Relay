@@ -101,7 +101,7 @@ fn open_window(
                 ..Default::default()
             }),
             kind: if quick {
-                WindowKind::Floating
+                WindowKind::PopUp
             } else {
                 WindowKind::Normal
             },
