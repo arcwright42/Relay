@@ -677,6 +677,96 @@ impl relay_core::capture::WebFetchService for PageFetcher {
     }
 }
 
+fn resize_quick_in_test(
+    event: &super::ResizeQuick,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) {
+    let handle = window.window_handle();
+    event.apply(handle, cx, move |size, cx| {
+        handle
+            .update(cx, |_, window, _| window.resize(size))
+            .unwrap();
+    });
+}
+
+#[gpui_kit::test]
+fn quick_manage_agents_opens_workspace_settings_for_the_same_project(cx: &mut TestAppContext) {
+    use gpui_kit::{px, size, test::TestWindowExt};
+    use relay_core::capture::{QuickAction, Selection};
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let workspace = cx.add_window(|window, cx| {
+        Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        )
+    });
+    let quick = cx.add_window(|window, cx| {
+        let mut view = Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        );
+        view.capture(
+            Selection {
+                text: "selected text".into(),
+                ..Default::default()
+            },
+            Arc::new(PageFetcher),
+            window,
+            cx,
+        );
+        view.open_project(ProjectId(2), window, cx);
+        view.agent_states[1].status = ConnectionStatus::Disconnected;
+        view.quick_send(QuickAction::Search, window, cx);
+        view
+    });
+    quick
+        .update(cx, |view, window, cx| {
+            view._subscriptions.push(cx.subscribe(
+                &cx.entity(),
+                move |_, _, event: &super::OpenAgentSettings, cx| {
+                    workspace
+                        .update(cx, |view, window, cx| {
+                            view.open_agent_settings(event.0, window, cx)
+                        })
+                        .unwrap();
+                },
+            ));
+            assert!(
+                !view.picker_open,
+                "connection controls must not obscure the result"
+            );
+            window.resize(size(px(520.), px(580.)));
+            window.bounds_changed(cx);
+        })
+        .unwrap();
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("quick-connect-codex").visible());
+        window.click("quick-manage-agents", cx);
+    })
+    .unwrap();
+    workspace
+        .update(cx, |view, _, _| {
+            assert!(view.page == Page::Agents);
+            assert_eq!(view.projects[view.selected_project].id, ProjectId(2));
+        })
+        .unwrap();
+    assert!(matches!(
+        &agents.0.lock().unwrap()[0],
+        (ProjectId(2), AgentCommand::DiscoverLocal)
+    ));
+}
+
 #[gpui_kit::test]
 fn quick_submission_does_not_wait_for_fetch_or_overwrite_workspace_draft(cx: &mut TestAppContext) {
     use relay_core::capture::{QuickAction, Selection};
@@ -954,7 +1044,9 @@ fn quick_toolbar_fits_and_result_hides_previous_conversation(cx: &mut TestAppCon
             view._subscriptions.push(cx.subscribe_in(
                 &cx.entity(),
                 window,
-                |_, _, event: &super::ResizeQuick, window, _| window.resize(event.0),
+                |_, _, event: &super::ResizeQuick, window, cx| {
+                    resize_quick_in_test(event, window, cx)
+                },
             ));
         })
         .unwrap();
@@ -968,9 +1060,29 @@ fn quick_toolbar_fits_and_result_hides_previous_conversation(cx: &mut TestAppCon
             assert!(button.bounds().right() <= px(640.));
         }
         window.click(("quick-action", 1_usize), cx);
-        window.resize(gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(460.)));
-        window.bounds_changed(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(window.viewport_size(), size(px(480.), px(360.)));
+        for id in [
+            "quick-title",
+            "quick-selection",
+            "quick-response",
+            "quick-footer",
+        ] {
+            let element = window.find(id);
+            assert!(
+                element.visible(),
+                "{id} must render after the native resize"
+            );
+            assert!(element.bounds().bottom() <= px(360.), "{id} below viewport");
+            assert!(
+                element.bounds().right() <= px(480.),
+                "{id} outside viewport"
+            );
+        }
         assert!(
             window.try_find("quick-copy").is_none(),
             "old replies must not appear"
@@ -1044,15 +1156,19 @@ fn quick_translation_language_changes_real_prompt(cx: &mut TestAppContext) {
             view._subscriptions.push(cx.subscribe_in(
                 &cx.entity(),
                 window,
-                |_, _, event: &super::ResizeQuick, window, _| window.resize(event.0),
+                |_, _, event: &super::ResizeQuick, window, cx| {
+                    resize_quick_in_test(event, window, cx)
+                },
             ));
         })
         .unwrap();
     cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("quick-action", 2_usize), cx);
-        window.resize(gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(460.)));
-        window.bounds_changed(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(quick.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("quick-language", cx);
         window.render_frame(cx);

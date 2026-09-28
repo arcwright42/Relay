@@ -16,7 +16,9 @@ impl Workbench {
             .iter()
             .map(|p| self.agent_service.snapshot(p.id))
             .collect();
-        if follow {
+        // Compact answers should remain where the user is reading while text
+        // streams in; the workspace conversation follows its live tail.
+        if follow && self.quick.is_none() {
             self.conversation_scroll.scroll_to_bottom();
         }
         cx.notify();
@@ -238,14 +240,38 @@ impl Workbench {
                         .icon(icon(IconName::Settings).size(px(15.)))
                         .label(self.text(Text::ManageAgents))
                         .text_size(px(12.))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.navigate(Page::Agents, window, cx)
-                        })),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.manage_agents(window, cx)),
+                        ),
                 ),
             )
     }
 
-    fn connect_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
+    pub(super) fn manage_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = false;
+        if self.quick.is_some() {
+            cx.emit(super::OpenAgentSettings(
+                self.projects[self.selected_project].id,
+            ));
+            // Deliver the event before dropping the emitting view/subscription.
+            window.defer(cx, |window, _| window.remove_window());
+        } else {
+            self.navigate(Page::Agents, window, cx);
+        }
+    }
+
+    pub fn open_agent_settings(
+        &mut self,
+        project: relay_core::ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_project(project, window, cx);
+        self.navigate(Page::Agents, window, cx);
+        self.agent_action(AgentCommand::DiscoverLocal, cx);
+    }
+
+    pub(super) fn connect_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
         let state = &self.agent_states[self.selected_project];
         let source = state.source.clone();
         Button::new(id)

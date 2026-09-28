@@ -3,8 +3,8 @@ use gpui_kit::*;
 use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
 use relay_runtime::{AgentRuntime, JevRouter, MoliFetcher, ProjectStore, SettingsStore};
 use relay_ui::{
-    FocusSearch, OpenProject, OpenQuick, OpenWorkspace, Quit, RequestAccessibility, ResizeQuick,
-    SendMessage, Workbench, apply_language,
+    FocusSearch, OpenAgentSettings, OpenProject, OpenQuick, OpenWorkspace, Quit,
+    RequestAccessibility, ResizeQuick, SendMessage, Workbench, apply_language,
 };
 use std::sync::Arc;
 
@@ -148,6 +148,15 @@ fn open_window(
                 open_workspace(event.0, cx)
             })
             .detach();
+            cx.subscribe(&view, |_, event: &OpenAgentSettings, cx| {
+                open_workspace(Some(event.0), cx);
+                if let Some((handle, view)) = cx.global::<Desktop>().workspace.clone() {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        view.update(cx, |view, cx| view.open_agent_settings(event.0, window, cx));
+                    });
+                }
+            })
+            .detach();
             cx.subscribe(&view, |_, _: &RequestAccessibility, cx| {
                 relay_platform::request_accessibility();
                 cx.open_url(
@@ -155,8 +164,11 @@ fn open_window(
                 );
             })
             .detach();
-            cx.subscribe(&view, |_, event: &ResizeQuick, _| {
-                relay_platform::resize_quick_panel(event.0.width.as_f32(), event.0.height.as_f32());
+            let quick_handle = window.window_handle();
+            cx.subscribe(&view, move |_, event: &ResizeQuick, cx| {
+                event.apply(quick_handle, cx, |size, _| {
+                    relay_platform::resize_quick_panel(size.width.as_f32(), size.height.as_f32());
+                });
             })
             .detach();
             view_handle = Some(view.clone());

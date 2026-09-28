@@ -15,7 +15,19 @@ fn main() -> Result<(), String> {
         .position(|a| a == "--prompt")
         .and_then(|i| args.get(i + 1))
         .cloned();
-    let root = AgentRuntime::default_directory().join("probes/codex");
+    // --data-dir can point to a COPY of existing data to exercise loading and
+    // connecting together. It is writable; never use it against a running app.
+    let root = args
+        .iter()
+        .position(|a| a == "--data-dir")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| AgentRuntime::default_directory().join("probes/codex"));
+    let source = args
+        .iter()
+        .position(|a| a == "--local")
+        .and_then(|i| args.get(i + 1))
+        .map_or(AgentSource::Managed, |path| AgentSource::Local(path.into()));
     let projects = Arc::new(ProjectStore::new(root.clone()));
     let id = projects
         .snapshot()
@@ -24,7 +36,16 @@ fn main() -> Result<(), String> {
         .ok_or("Probe project unavailable")?
         .id;
     let runtime = AgentRuntime::new(root, projects);
-    runtime.dispatch(id, AgentCommand::Connect(AgentSource::Managed))?;
+    let before = runtime.snapshot(id);
+    println!(
+        "Loaded project {}; {} saved messages",
+        id.0,
+        before.messages.len()
+    );
+    if let Some(error) = before.error {
+        return Err(error);
+    }
+    runtime.dispatch(id, AgentCommand::Connect(source))?;
     let started = Instant::now();
     let mut previous = String::new();
     let mut sent = false;

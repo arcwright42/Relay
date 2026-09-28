@@ -116,3 +116,17 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 `orderFrontRegardless` 调整后用户仍报告不可见，故不能把普通前置排序当作已验证根因。原生日志确认窗口已 order-in、位置落在副屏，但这不等于当前 Space 中可见。按 EasyDict 面板模型改用构造时即带 NonactivatingPanel 的 GPUI PopUp；原生级别降到 NSFloatingWindowLevel（3），避免 GPUI 默认 PopUp 级别（101）遮住输入法候选窗。设置 floatingPanel、CanJoinAllApplications、CanJoinAllSpaces、FullScreenAuxiliary、Transient 和 IgnoresCycle。点击输入只 makeKey，不激活整个 Relay，避免将工作台 Space 一起带到前台。诊断增加 active_space、occlusion、style。实际显示效果仍待用户确认，不把 isVisible=true 当作验收成功。
 
 用户确认本次非激活面板版本能够显示；当前剩余失败样本来自 VS Code，AX 返回空选区，权限已获准。Chrome 此前已有 AX 成功样本，需分别处理应用兼容性。
+
+### 结果渲染、配置入口与历史兼容（2026-09-28）
+
+用户随后确认 Chrome / VS Code 取词似乎恢复，但发送后仅显示标题，展开区域为空。原生窗口调整尺寸后显式同步 GPUI viewport 与布局，记录请求尺寸和同步前后尺寸；回归测试走与应用相同的延迟 resize 路径，不再通过测试代码额外修正 viewport。引用选区与翻译语言栏固定在答案滚动区域外，输入栏保持可见；结果面板使用更清晰的浅色半透明底。
+
+未连接时在面板内显示连接及管理入口，错误不再被自动弹出的模型菜单覆盖。浮窗的「管理智能体」通过事件打开同一项目的工作台配置页，并在事件送达之后关闭浮窗；设置页自动扫描本地程序。
+
+现场连接错误实际发生在历史读取阶段：另一个本地开发分支写入 v3 对话，而本分支此前只接受 v1/v2。支持 v3 的 harness / provider / local_executable 字段并保留其元数据；只有用户明确连接 Codex 时才切换 harness、清理不可复用的原生会话及配置，原有消息保留。未知后续格式和损坏文件继续保护，不以空白历史覆盖。
+
+历史读取、写入和 Agent 异步错误同时写入 stderr 与 `<Relay 数据目录>/logs/runtime.jsonl`，包含项目、操作、具体原因和时间，不写入选区或请求正文。历史错误阻止连接时保留原始原因、文件路径和格式版本，避免通用提示覆盖它。格式不支持的回归测试验证日志、连接错误一致，并验证原文件字节不变。
+
+使用现场三个项目对话文件的副本验证完整 runtime：项目 1 的 20 条消息成功恢复，本地 `/Users/relu/.local/bin/codex` 建连后返回模型配置；检查后消息数仍为 20，格式仍为 v3。`cargo run -p relay-ui --example quick_preview` 用实际 GPUI Metal 渲染器输出解释、翻译、搜索、未连接和错误五种状态（回答为夹具），用于人工检查布局。Computer Use 仍因 native pipe 启动失败无法进行桌面点击验收。
+
+本次 `cargo xtask verify` 全部 82 项测试通过。另在空白隔离项目通过本地 Codex 实际发送固定测试提示并收到「Relay 连接测试成功」，未使用用户历史作为测试请求。关闭旧 Relay 后，实际项目 1 也经 runtime 建连验证，20 条消息保留，本地 Codex 路径已保存。新版使用原 Developer ID 签名启动，启动诊断仍为 `trusted=true`。

@@ -8,8 +8,39 @@ use relay_core::{
 pub struct ResizeQuick(pub Size<Pixels>);
 impl EventEmitter<ResizeQuick> for Workbench {}
 
+impl ResizeQuick {
+    /// Native resizing can happen while GPUI is processing an event, when its
+    /// platform callback cannot re-enter the app. Always resync the viewport
+    /// after resizing, so layout and hit testing use the new content size.
+    pub fn apply(
+        &self,
+        handle: AnyWindowHandle,
+        cx: &mut App,
+        resize: impl FnOnce(Size<Pixels>, &mut App) + 'static,
+    ) {
+        let requested = self.0;
+        cx.defer(move |cx| {
+            let Ok(before) = handle.update(cx, |_, window, _| window.viewport_size()) else {
+                return;
+            };
+            resize(requested, cx);
+            if let Err(error) = handle.update(cx, |_, window, cx| {
+                window.bounds_changed(cx);
+                eprintln!(
+                    "quick: resize requested={requested:?} viewport={before:?} -> {:?}",
+                    window.viewport_size()
+                );
+            }) {
+                eprintln!("quick: resize sync failed: {error}");
+            }
+        });
+    }
+}
+
 pub struct OpenProject(pub Option<ProjectId>);
 impl EventEmitter<OpenProject> for Workbench {}
+pub struct OpenAgentSettings(pub ProjectId);
+impl EventEmitter<OpenAgentSettings> for Workbench {}
 pub struct RequestAccessibility;
 impl EventEmitter<RequestAccessibility> for Workbench {}
 
@@ -190,7 +221,8 @@ impl Workbench {
             return;
         }
         if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
-            self.picker_open = true;
+            // Show connection controls in the result itself. An automatically
+            // opened popover can obscure the selection and its error message.
             cx.notify();
             return;
         }
@@ -227,7 +259,11 @@ impl Workbench {
                 draft.set_value("", window, cx);
                 draft.set_placeholder("继续提问", window, cx);
             });
-            self.conversation_scroll.scroll_to_bottom();
+            if first {
+                self.conversation_scroll = ScrollHandle::new();
+            } else {
+                self.conversation_scroll.scroll_to_bottom();
+            }
         }
     }
 
@@ -406,12 +442,16 @@ impl Workbench {
         let close = Button::new("quick-close")
             .ghost()
             .small()
-            .icon(IconName::X)
+            .flex_shrink_0()
+            .size(px(28.))
+            .label("×")
+            .text_size(px(20.))
             .on_click(|_, window, _| window.remove_window());
         let expand = Button::new("quick-expand")
             .ghost()
             .small()
             .label(self.text(Text::QuickExpand))
+            .text_size(px(12.))
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.emit(OpenProject(
                     this.projects.get(this.selected_project).map(|p| p.id),
@@ -424,7 +464,11 @@ impl Workbench {
             .rounded(px(14.))
             .border_1()
             .border_color(rgba(0x00000020))
-            .bg(rgba(0xeeeff2bd));
+            .bg(rgba(if quick.action.is_some() {
+                0xfafafafa
+            } else {
+                0xeeeff2e6
+            }));
         if quick.action.is_none() {
             return surface
                 .child(
@@ -569,17 +613,15 @@ impl Workbench {
             QuickAction::Summarize => "总结",
             QuickAction::Ask => "问问 Relay",
         };
-        let mut body = column()
-            .id("quick-response")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.conversation_scroll)
+        // Selection and language controls stay visible while a long answer
+        // scrolls. They must not share the conversation's scroll-to-bottom.
+        let mut context = column()
+            .flex_shrink_0()
             .px(px(20.))
             .pb(px(12.))
-            .gap(px(14.));
+            .gap(px(12.));
         if action == QuickAction::Translate {
-            body = body.child(
+            context = context.child(
                 row()
                     .justify_between()
                     .p(px(10.))
@@ -591,23 +633,34 @@ impl Workbench {
             );
         }
         if quick.selection.text.is_empty() {
-            body = body.child(div().p(px(10.)).rounded(px(8.)).bg(rgba(0xffe5bfaa))
+            context = context.child(div().p(px(10.)).rounded(px(8.)).bg(rgba(0xffe5bfaa))
                 .text_size(px(12.)).child("未读取到选中文字。当前问题不会自动获得你正在看的内容，请粘贴材料或重新选中后按快捷键。"));
         }
         if !quick.selection.text.is_empty() {
-            body = body.child(
+            context = context.child(
                 div()
                     .id("quick-selection")
+                    .flex_shrink_0()
                     .max_h(px(88.))
                     .overflow_y_scroll()
                     .border_l_2()
                     .border_color(rgb(0xb6b7bc))
                     .pl(px(10.))
-                    .text_color(rgb(0x777981))
+                    .text_color(rgb(0x656870))
                     .text_size(px(13.))
-                    .child(quick.selection.text.clone()),
+                    .child(quick.selection.text.clone())
+                    .test_support(),
             );
         }
+        let mut body = column()
+            .id("quick-response")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.conversation_scroll)
+            .px(px(20.))
+            .pb(px(12.))
+            .gap(px(14.));
         if has_project {
             let state = &self.agent_states[self.selected_project];
             for (index, message) in state
@@ -671,26 +724,52 @@ impl Workbench {
             if busy {
                 body = body.child(muted("正在处理…").text_size(px(12.)));
             }
-            if !quick.sent && has_input {
-                body = body
-                    .child(muted(if state.status == ConnectionStatus::Ready {
-                        "点击继续发送。"
-                    } else {
-                        "连接 Agent 后点击继续。"
-                    }))
-                    .child(
-                        Button::new("quick-continue")
-                            .small()
-                            .label("继续")
-                            .disabled(state.status != ConnectionStatus::Ready)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.quick_send(action, window, cx)
-                            })),
-                    );
+            if matches!(
+                state.status,
+                ConnectionStatus::Disconnected | ConnectionStatus::Failed
+            ) {
+                body = body.child(
+                    column()
+                        .id("quick-connect")
+                        .flex_shrink_0()
+                        .p(px(12.))
+                        .gap(px(10.))
+                        .rounded(px(10.))
+                        .bg(rgba(0xffffffb3))
+                        .child("连接 Codex 后即可处理选中文字。")
+                        .child(
+                            row()
+                                .gap(px(8.))
+                                .child(self.connect_button("quick-connect-codex", cx))
+                                .child(
+                                    Button::new("quick-manage-agents")
+                                        .ghost()
+                                        .small()
+                                        .label(self.text(Text::ManageAgents))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.manage_agents(window, cx)
+                                        })),
+                                ),
+                        ),
+                );
             }
-            body = body
-                .child(self.connection_notice(cx))
-                .child(self.permission_cards(cx));
+            if !quick.sent && has_input && state.status == ConnectionStatus::Ready {
+                body = body.child(muted("点击继续发送。")).child(
+                    Button::new("quick-continue")
+                        .small()
+                        .label("继续")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.quick_send(action, window, cx)
+                        })),
+                );
+            }
+            if state.status != ConnectionStatus::Ready
+                || state.error.is_some()
+                || self.agent_errors[self.selected_project].is_some()
+            {
+                body = body.child(self.connection_notice(cx));
+            }
+            body = body.child(self.permission_cards(cx));
         }
         surface
             .child(
@@ -709,12 +788,14 @@ impl Workbench {
                             .child(title)
                             .on_mouse_down(MouseButton::Left, |_, window, _| {
                                 window.start_window_move()
-                            }),
+                            })
+                            .test_support(),
                     )
                     .child(expand)
                     .child(close),
             )
-            .child(body)
+            .child(context)
+            .child(body.test_support())
             .when(has_project, |view| {
                 view.child(
                     row()
@@ -739,6 +820,13 @@ impl Workbench {
                         }),
                 )
             })
-            .child(row().flex_shrink_0().p(px(14.)).child(self.quick_input(cx)))
+            .child(
+                row()
+                    .id("quick-footer")
+                    .flex_shrink_0()
+                    .p(px(14.))
+                    .child(self.quick_input(cx))
+                    .test_support(),
+            )
     }
 }

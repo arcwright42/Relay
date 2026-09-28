@@ -10,5 +10,6 @@ mod workbench;
 
 pub use locale::{OpenQuick, OpenWorkspace, Quit, apply_language};
 pub use workbench::{
-    FocusSearch, OpenProject, RequestAccessibility, ResizeQuick, SendMessage, Workbench,
+    FocusSearch, OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick, SendMessage,
+    Workbench,
 };
