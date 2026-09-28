@@ -8,6 +8,14 @@ pub(crate) struct Rect {
 }
 
 impl Rect {
+    pub fn relative_to(self, screen: Self) -> Self {
+        Self {
+            x: self.x - screen.x,
+            y: self.y - screen.y,
+            ..self
+        }
+    }
+
     pub fn fit(self, screen: Self) -> Self {
         let margin = 8.;
         let width = self.width.min((screen.width - margin * 2.).max(1.));
@@ -53,6 +61,37 @@ mod tests {
         width: 1440.,
         height: 825.,
     };
+    #[test]
+    fn display_local_coordinates_remove_the_real_nonzero_origin_once() {
+        for screen in [
+            Rect {
+                x: 1440.,
+                y: 200.,
+                width: 1920.,
+                height: 1080.,
+            },
+            Rect {
+                x: -1920.,
+                y: -500.,
+                width: 1920.,
+                height: 1080.,
+            },
+            Rect {
+                x: 100.,
+                y: 900.,
+                width: 1920.,
+                height: 1080.,
+            },
+        ] {
+            let placed = Rect::near_pointer((screen.x + 500., screen.y + 400.), 640., 54., screen);
+            let local = placed.relative_to(screen);
+            assert_eq!((local.x, local.y), (505., 412.));
+            assert_eq!(
+                (local.x + screen.x, local.y + screen.y),
+                (placed.x, placed.y)
+            );
+        }
+    }
     #[test]
     fn toolbar_does_not_reserve_future_result_height() {
         let r = Rect::near_pointer((500., 700.), 640., 54., SCREEN);

@@ -73,3 +73,9 @@ Moli 优先以独立 CLI 接入，不把浏览器内核编入 Relay。AI 联网�
 对照 [EasyDict 的窗口定位](https://github.com/tisfeng/Easydict/blob/a2c17837b08b1ce86c8ca23648d6f6d9bf8b9a7d/Easydict/objc/ViewController/Window/WindowManager/EZWindowManager.m) 与 [坐标边界处理](https://github.com/tisfeng/Easydict/blob/a2c17837b08b1ce86c8ca23648d6f6d9bf8b9a7d/Easydict/objc/Utility/EZCoordinateUtils/EZCoordinateUtils.m)，按实际窗口尺寸与 NSScreen.visibleFrame 放置浮窗。触发位置在读取选区前保存，底部空间不足时工具条翻到鼠标上方；展开或收起时按原窗口所在屏幕修正位置，不重新跟随鼠标。统一处理 Quartz 顶部原点与 AppKit 底部原点，多屏和 Retina 均使用逻辑坐标。
 
 包边界、Clippy 与 75 项测试通过。新增屏幕下半部、右下角翻转、展开结果避让、负坐标副屏和小屏几何验证。Computer Use 返回 `Sky Computer Use native pipe startup failed`，本轮尚未取得实机截图，自动化几何测试不替代桌面操作验收。
+
+### 上方副屏偏移的实际根因
+
+GPUI 0.3.6 的 MacDisplay::bounds 使用 CGDisplayBounds 的尺寸，却把每块显示器的 origin 置零。因此不可用它查找全局鼠标所在屏幕，也不能用它将全局坐标转换为屏幕内坐标。现在使用 CGGetDisplaysWithPoint 得到原生显示器 ID，使用 NSScreen 的真实 frame 计算屏幕内位置，将 ID 和位置一起传给 GPUI。上下方向策略本次未修改。
+
+`cargo run -p relay-platform --example display_probe` 可只读验证本机屏幕匹配和坐标转换。本机检查通过：主屏原点 (0, 0)、1512×982、ID 1；上方副屏原点 (-126, -1080)、1920×1080、ID 3，两者分别匹配到正确的屏幕内位置。新增原点非零的左右及上下排列回归；全量 76 项测试通过。此检查读取真实屏幕信息，但不等同于窗口截图验收。

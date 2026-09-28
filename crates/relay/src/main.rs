@@ -71,18 +71,15 @@ fn open_window(
         cx,
     );
     let mut display_id = None;
-    if quick && let Some((x, y)) = anchor {
-        let pointer = point(px(x), px(y));
-        if let Some(display) = cx
-            .displays()
-            .into_iter()
-            .find(|d| d.bounds().contains(&pointer))
-        {
-            display_id = Some(display.id());
-            if let Some((left, top)) = relay_platform::quick_origin((x, y), 640., 54.) {
-                bounds.origin = point(px(left), px(top)) - display.bounds().origin;
-            }
-        }
+    if quick
+        && let Some(placement) =
+            anchor.and_then(|pointer| relay_platform::quick_origin(pointer, 640., 54.))
+    {
+        // GPUI's MacDisplay::bounds drops every display origin. Use the native
+        // display ID and display-local coordinates together; never infer a screen
+        // from those origin-less bounds.
+        display_id = Some(DisplayId::new(placement.display_id as u64));
+        bounds.origin = point(px(placement.left), px(placement.top));
     }
     let mut view_handle = None;
     let handle = cx.open_window(

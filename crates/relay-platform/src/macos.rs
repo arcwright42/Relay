@@ -401,6 +401,12 @@ struct Point {
 unsafe extern "C" {
     fn CGEventCreate(source: Ref) -> Ref;
     fn CGEventGetLocation(event: Ref) -> Point;
+    fn CGGetDisplaysWithPoint(
+        point: Point,
+        capacity: u32,
+        displays: *mut u32,
+        count: *mut u32,
+    ) -> i32;
 }
 
 /// Global desktop coordinates, with the origin at the main display's top left.
@@ -415,4 +421,22 @@ pub fn pointer_position() -> Option<(f32, f32)> {
         let point = CGEventGetLocation(event.0);
         Some((point.x as f32, point.y as f32))
     }
+}
+
+pub(super) fn display_at_position(x: f32, y: f32) -> Option<u32> {
+    let mut display = 0;
+    let mut count = 0;
+    // SAFETY: the two output pointers are valid, and the display buffer has capacity one.
+    let status = unsafe {
+        CGGetDisplaysWithPoint(
+            Point {
+                x: x as f64,
+                y: y as f64,
+            },
+            1,
+            &mut display,
+            &mut count,
+        )
+    };
+    (status == 0 && count == 1).then_some(display)
 }

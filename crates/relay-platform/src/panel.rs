@@ -3,6 +3,14 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSScreen};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
+#[derive(Debug)]
+pub struct PanelPlacement {
+    pub display_id: u32,
+    /// Coordinates relative to this display, as expected by GPUI's macOS window constructor.
+    pub left: f32,
+    pub top: f32,
+}
+
 pub const QUICK_PANEL_TITLE: &str = "Relay Quick";
 
 fn top_left_rect(rect: objc2_foundation::NSRect, primary_height: f64) -> Rect {
@@ -16,7 +24,7 @@ fn top_left_rect(rect: objc2_foundation::NSRect, primary_height: f64) -> Rect {
 
 /// Choose the pointer's screen, excluding its menu bar and Dock.
 /// AppKit and Quartz share logical units but have opposite vertical axes.
-pub fn quick_origin(pointer: (f32, f32), width: f32, height: f32) -> Option<(f32, f32)> {
+pub fn quick_origin(pointer: (f32, f32), width: f32, height: f32) -> Option<PanelPlacement> {
     let mtm = MainThreadMarker::new()?;
     let screens = NSScreen::screens(mtm);
     let primary_height = screens.firstObject()?.frame().size.height;
@@ -26,7 +34,12 @@ pub fn quick_origin(pointer: (f32, f32), width: f32, height: f32) -> Option<(f32
         if x >= frame.x && x < frame.x + frame.width && y >= frame.y && y < frame.y + frame.height {
             let usable = top_left_rect(screen.visibleFrame(), primary_height);
             let placed = Rect::near_pointer((x, y), width as f64, height as f64, usable);
-            return Some((placed.x as f32, placed.y as f32));
+            let local = placed.relative_to(frame);
+            return Some(PanelPlacement {
+                display_id: crate::macos::display_at_position(pointer.0, pointer.1)?,
+                left: local.x as f32,
+                top: local.y as f32,
+            });
         }
     }
     None
