@@ -50,8 +50,10 @@ unsafe extern "C" {
     fn AXIsProcessTrustedWithOptions(options: Ref) -> bool;
     static kAXTrustedCheckOptionPrompt: Ref;
     fn AXUIElementCreateSystemWide() -> Ref;
+    fn AXUIElementCreateApplication(pid: i32) -> Ref;
     fn AXUIElementCopyAttributeValue(element: Ref, attribute: Ref, value: *mut Ref) -> i32;
     fn AXUIElementGetTypeID() -> usize;
+    fn AXUIElementGetPid(element: Ref, pid: *mut i32) -> i32;
     fn AXUIElementSetAttributeValue(element: Ref, attribute: Ref, value: Ref) -> i32;
     fn AXUIElementCopyParameterizedAttributeValue(
         element: Ref,
@@ -123,6 +125,18 @@ pub struct Shortcut {
 impl Shortcut {
     /// Control + Option + Space. Carbon reports conflicts instead of stealing a shortcut.
     pub fn register() -> Result<Self, String> {
+        // Record trust from Relay itself, not a terminal helper with a different identity.
+        if let Some(home) = std::env::var_os("HOME") {
+            let directory = std::path::PathBuf::from(home).join("Library/Logs/Relay");
+            if std::fs::create_dir_all(&directory).is_ok() {
+                // SAFETY: permission query takes no arguments and has no side effects.
+                let trusted = unsafe { AXIsProcessTrusted() };
+                let _ = std::fs::write(
+                    directory.join("accessibility-startup.log"),
+                    format!("pid={} trusted={trusted}\n", std::process::id()),
+                );
+            }
+        }
         let (sender, receiver) = async_channel::bounded(1);
         let mut sender = Box::new(sender);
         let mut handler = ptr::null_mut();
@@ -205,6 +219,12 @@ fn attribute(element: &Owned, name: &std::ffi::CStr) -> Option<Owned> {
         let key = Owned(key);
         let mut value = ptr::null();
         let status = AXUIElementCopyAttributeValue(element.0, key.0, &mut value);
+        diagnostic(format!(
+            "{} status={} value_present={}",
+            name.to_string_lossy(),
+            status,
+            !value.is_null()
+        ));
         if status == 0 && !value.is_null() {
             Some(Owned(value))
         } else {
@@ -324,10 +344,12 @@ fn browser_selection(window: Owned, deadline: Instant) -> Option<(String, Option
 }
 
 /// Run before activating Relay. AX can block, so callers use a background executor.
-pub fn capture_selection() -> Selection {
+pub fn capture_selection(source_pid: Option<i32>) -> Selection {
+    let _diagnostics = CaptureDiagnostics::start(source_pid);
     let mut selection = Selection::default();
     // SAFETY: API has no pointer parameters and is safe to query from a worker.
     if !unsafe { AXIsProcessTrusted() } {
+        diagnostic("permission=denied".into());
         selection.accessibility_missing = true;
         return selection;
     }
@@ -341,7 +363,14 @@ pub fn capture_selection() -> Selection {
         AXUIElementSetMessagingTimeout(system.0, 0.2);
     }
     let deadline = Instant::now() + Duration::from_millis(900);
-    let app = attribute(&system, c"AXFocusedApplication");
+    diagnostic("permission=granted".into());
+    let app = source_pid
+        .and_then(|pid| {
+            // SAFETY: positive source PID was captured on the main thread before spawning.
+            let raw = unsafe { AXUIElementCreateApplication(pid) };
+            (!raw.is_null()).then_some(Owned(raw))
+        })
+        .or_else(|| attribute(&system, c"AXFocusedApplication"));
     if let Some(app) = &app {
         selection.application = attribute(app, c"AXTitle").and_then(string);
         // Request the browser's accessibility tree; unsupported apps ignore this attribute.
@@ -358,7 +387,28 @@ pub fn capture_selection() -> Selection {
             }
         }
     }
-    let mut focus = attribute(&system, c"AXFocusedUIElement");
+    // Match EasyDict: resolve focus inside the frozen source application first.
+    let mut focus = app
+        .as_ref()
+        .and_then(|app| attribute(app, c"AXFocusedUIElement"));
+    if focus.is_none()
+        && app.as_ref().and_then(process_id)
+            == attribute(&system, c"AXFocusedApplication")
+                .as_ref()
+                .and_then(process_id)
+    {
+        focus = attribute(&system, c"AXFocusedUIElement");
+    }
+    // Do not walk out of a password field and attempt a synthetic copy.
+    if focus
+        .as_ref()
+        .and_then(|e| attribute(e, c"AXSubrole"))
+        .and_then(string)
+        .as_deref()
+        == Some("AXSecureTextField")
+    {
+        return selection;
+    }
     for _ in 0..8 {
         if Instant::now() >= deadline {
             break;
@@ -374,8 +424,8 @@ pub fn capture_selection() -> Selection {
         }
         focus = attribute(&element, c"AXParent");
     }
-    if let Some(app) = app
-        && let Some(window) = attribute(&app, c"AXFocusedWindow")
+    if let Some(app) = &app
+        && let Some(window) = attribute(app, c"AXFocusedWindow")
     {
         if selection.url.is_none() {
             selection.url = web_url(&window);
@@ -389,6 +439,17 @@ pub fn capture_selection() -> Selection {
             }
         }
     }
+    diagnostic(format!("ax_text_chars={}", selection.text.chars().count()));
+    if selection.text.is_empty()
+        && let Some(app) = &app
+    {
+        selection.text = copy_selection(&system, app).unwrap_or_default();
+    }
+    diagnostic(format!(
+        "result_text_chars={} url_present={}",
+        selection.text.chars().count(),
+        selection.url.is_some()
+    ));
     selection
 }
 
@@ -400,6 +461,10 @@ struct Point {
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventCreate(source: Ref) -> Ref;
+    fn CGEventCreateKeyboardEvent(source: Ref, key: u16, down: bool) -> Ref;
+    fn CGEventSetFlags(event: Ref, flags: u64);
+    fn CGEventPostToPid(pid: i32, event: Ref);
+    fn CGEventSourceFlagsState(state: i32) -> u64;
     fn CGEventGetLocation(event: Ref) -> Point;
     fn CGGetDisplaysWithPoint(
         point: Point,
@@ -439,4 +504,142 @@ pub(super) fn display_at_position(x: f32, y: f32) -> Option<u32> {
         )
     };
     (status == 0 && count == 1).then_some(display)
+}
+
+fn process_id(app: &Owned) -> Option<i32> {
+    let mut pid = 0;
+    // SAFETY: app is a retained AX object and pid is a valid output pointer.
+    (unsafe { AXUIElementGetPid(app.0, &mut pid) } == 0 && pid > 0).then_some(pid)
+}
+
+/// EasyDict-style shortcut fallback. Only accept a fresh copy from the source app;
+/// never mistake existing clipboard text for the selection. Preserve every format.
+fn copy_selection(system: &Owned, app: &Owned) -> Option<String> {
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardWriting};
+    use objc2_foundation::{NSArray, NSString};
+    let pid = process_id(app)?;
+    if pid == std::process::id() as i32 {
+        return None;
+    }
+    let still_source = || {
+        attribute(system, c"AXFocusedApplication")
+            .as_ref()
+            .and_then(process_id)
+            == Some(pid)
+    };
+    // The global shortcut's Control/Option keys must be released before Cmd-C.
+    let release_deadline = Instant::now() + Duration::from_millis(800);
+    while unsafe { CGEventSourceFlagsState(1) } & ((1 << 17) | (1 << 18) | (1 << 19) | (1 << 20))
+        != 0
+    {
+        if Instant::now() >= release_deadline || !still_source() {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !still_source() {
+        return None;
+    }
+    let board = NSPasteboard::generalPasteboard();
+    let before = board.changeCount();
+    let mut saved: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
+    if let Some(items) = board.pasteboardItems() {
+        for item in items.iter() {
+            let copy = NSPasteboardItem::new();
+            for kind in item.types().iter() {
+                // Abort if a promised type cannot be materialized, rather than lose it.
+                let data = item.dataForType(&kind)?;
+                if !copy.setData_forType(&data, &kind) {
+                    return None;
+                }
+            }
+            saved.push(ProtocolObject::from_retained(copy));
+        }
+    }
+    if board.changeCount() != before || !still_source() {
+        return None;
+    }
+    // SAFETY: events are retained CF objects; virtual key 8 is C. Target the
+    // original process without activating Relay or broadcasting to another app.
+    unsafe {
+        let down = CGEventCreateKeyboardEvent(ptr::null(), 8, true);
+        if down.is_null() {
+            return None;
+        }
+        let down = Owned(down);
+        let up = CGEventCreateKeyboardEvent(ptr::null(), 8, false);
+        if up.is_null() {
+            return None;
+        }
+        let up = Owned(up);
+        CGEventSetFlags(down.0, 1 << 20);
+        CGEventSetFlags(up.0, 1 << 20);
+        CGEventPostToPid(pid, down.0);
+        CGEventPostToPid(pid, up.0);
+    }
+    let deadline = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < deadline {
+        if !still_source() {
+            return None;
+        }
+        let copied = board.changeCount();
+        if copied != before {
+            let text = board
+                .stringForType(&NSString::from_str("public.utf8-plain-text"))
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty());
+            // Do not overwrite a subsequent user copy with our saved contents.
+            if board.changeCount() == copied && still_source() {
+                board.clearContents();
+                if !saved.is_empty() {
+                    board.writeObjects(&NSArray::from_retained_slice(&saved));
+                }
+            }
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+/// Freeze the source on the event-loop thread, before background AX work starts.
+pub fn frontmost_process() -> Option<i32> {
+    objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|app| app.processIdentifier())
+        .filter(|pid| *pid > 0)
+}
+
+thread_local! {
+    static CAPTURE_TRACE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+fn diagnostic(line: String) {
+    CAPTURE_TRACE.with_borrow_mut(|trace| {
+        if let Some(trace) = trace
+            && trace.len() < 4096
+        {
+            trace.push(line);
+        }
+    });
+}
+struct CaptureDiagnostics;
+impl CaptureDiagnostics {
+    fn start(pid: Option<i32>) -> Self {
+        CAPTURE_TRACE.with_borrow_mut(|trace| *trace = Some(vec![format!("source_pid={pid:?}")]));
+        Self
+    }
+}
+impl Drop for CaptureDiagnostics {
+    fn drop(&mut self) {
+        // Only statuses and lengths, never selected text, clipboard data, titles or URLs.
+        if let Some(lines) = CAPTURE_TRACE.with_borrow_mut(Option::take)
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            let directory = std::path::PathBuf::from(home).join("Library/Logs/Relay");
+            if std::fs::create_dir_all(&directory).is_ok() {
+                let _ = std::fs::write(directory.join("selection-latest.log"), lines.join("\n"));
+            }
+        }
+    }
 }

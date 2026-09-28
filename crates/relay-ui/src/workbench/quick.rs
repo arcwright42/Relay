@@ -140,6 +140,12 @@ impl Workbench {
         if self.agent_states[self.selected_project].status.is_busy() {
             return;
         }
+        let composing = self.drafts[self.selected_project].update(cx, |draft, cx| {
+            EntityInputHandler::marked_text_range(draft, window, cx).is_some()
+        });
+        if composing {
+            return;
+        }
         let quick = self.quick.as_ref().expect("quick view");
         let action = if quick.sent {
             action
@@ -150,9 +156,8 @@ impl Workbench {
             .read(cx)
             .value()
             .to_string();
-        if question.trim().is_empty() && (quick.sent || quick.selection.text.trim().is_empty()) {
-            return;
-        }
+        let missing_input =
+            question.trim().is_empty() && (quick.sent || quick.selection.text.trim().is_empty());
         if self.quick.as_ref().unwrap().action.is_none() {
             self.quick.as_mut().unwrap().action = Some(action);
             cx.emit(ResizeQuick(size(
@@ -167,6 +172,14 @@ impl Workbench {
                     _ => 580.,
                 }),
             )));
+        }
+        if missing_input {
+            let focus = self.drafts[self.selected_project].read(cx).focus_handle(cx);
+            window.activate_window();
+            cx.activate(true);
+            window.focus(&focus, cx);
+            cx.notify();
+            return;
         }
         if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
             self.picker_open = true;
@@ -335,6 +348,10 @@ impl Workbench {
 
     fn quick_input(&self, cx: &mut Context<Self>) -> Div {
         row()
+            .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                cx.activate(true);
+                window.activate_window();
+            })
             .flex_1()
             .min_w_0()
             .gap(px(4.))
@@ -434,7 +451,7 @@ impl Workbench {
                                     .ghost()
                                     .small()
                                     .label(self.text(label))
-                                    .disabled(!has_input || busy)
+                                    .disabled(!has_project || busy)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.quick_send(action, window, cx)
                                     }))
@@ -647,16 +664,22 @@ impl Workbench {
             if busy {
                 body = body.child(muted("正在处理…").text_size(px(12.)));
             }
-            if !quick.sent {
-                body = body.child(muted("连接 Agent 后点击继续。")).child(
-                    Button::new("quick-continue")
-                        .small()
-                        .label("继续")
-                        .disabled(state.status != ConnectionStatus::Ready)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.quick_send(action, window, cx)
-                        })),
-                );
+            if !quick.sent && has_input {
+                body = body
+                    .child(muted(if state.status == ConnectionStatus::Ready {
+                        "点击继续发送。"
+                    } else {
+                        "连接 Agent 后点击继续。"
+                    }))
+                    .child(
+                        Button::new("quick-continue")
+                            .small()
+                            .label("继续")
+                            .disabled(state.status != ConnectionStatus::Ready)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.quick_send(action, window, cx)
+                            })),
+                    );
             }
             body = body
                 .child(self.connection_notice(cx))

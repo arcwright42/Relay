@@ -88,3 +88,20 @@ pub fn resize_quick_panel(width: f32, height: f32) {
         );
     }
 }
+
+/// Keep the IME-capable floating panel available over full-screen browser spaces.
+pub fn configure_quick_panel() {
+    use objc2_app_kit::NSWindowCollectionBehavior;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    for window in NSApplication::sharedApplication(mtm).windows().iter() {
+        if window.title().to_string() == QUICK_PANEL_TITLE {
+            window.setHidesOnDeactivate(false);
+            window.setCollectionBehavior(
+                NSWindowCollectionBehavior::CanJoinAllSpaces
+                    | NSWindowCollectionBehavior::FullScreenAuxiliary,
+            );
+        }
+    }
+}

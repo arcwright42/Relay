@@ -333,12 +333,13 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
             version = env!("CARGO_PKG_VERSION")
         ),
     )?;
+    let signing_identity = std::env::var("RELAY_SIGNING_IDENTITY").unwrap_or_else(|_| "-".into());
     run(
         "codesign",
         &[
             "--force",
             "--sign",
-            "-",
+            &signing_identity,
             app.to_str().ok_or("Invalid app path")?,
         ],
     )?;

@@ -92,7 +92,7 @@ fn open_window(
                 ..Default::default()
             }),
             kind: if quick {
-                WindowKind::PopUp
+                WindowKind::Floating
             } else {
                 WindowKind::Normal
             },
@@ -113,6 +113,7 @@ fn open_window(
         |window, cx| {
             if quick {
                 window.set_window_title(relay_platform::QUICK_PANEL_TITLE);
+                relay_platform::configure_quick_panel();
             }
             let view = cx.new(|cx| {
                 let mut view = Workbench::new(
@@ -261,8 +262,9 @@ fn main() {
             cx.spawn(async move |cx| {
                 while shortcut.next_trigger().await {
                     let anchor = relay_platform::pointer_position();
+                    let source_pid = relay_platform::frontmost_process();
                     let selection = executor
-                        .spawn(async { relay_platform::capture_selection() })
+                        .spawn(async move { relay_platform::capture_selection(source_pid) })
                         .await;
                     shortcut.discard_pending();
                     cx.update(|cx| open_quick(selection, anchor, cx));

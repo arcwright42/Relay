@@ -1065,3 +1065,50 @@ fn quick_translation_language_changes_real_prompt(cx: &mut TestAppContext) {
         matches!(&commands[1], (_, AgentCommand::Send(text)) if text.contains("English") && text.contains("selected original"))
     );
 }
+
+#[gpui_kit::test]
+fn quick_empty_action_opens_and_ime_must_commit_before_send(cx: &mut TestAppContext) {
+    use gpui_kit::{EntityInputHandler, test::TestWindowExt};
+    use relay_core::capture::{QuickAction, Selection};
+    cx.update(gpui_kit::init);
+    let agents = Arc::new(ReadyAgents::default());
+    let quick = cx.add_window(|window, cx| {
+        let mut view = Workbench::new(
+            agents.clone(),
+            Arc::new(TestSettings::default()),
+            Arc::new(TestProjects::default()),
+            Arc::new(TestRouting),
+            window,
+            cx,
+        );
+        view.capture(Selection::default(), Arc::new(PageFetcher), window, cx);
+        view
+    });
+    cx.update_window(quick.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("quick-action", 2_usize), cx);
+    })
+    .unwrap();
+    quick
+        .update(cx, |view, window, cx| {
+            assert!(agents.0.lock().unwrap().is_empty());
+            view.drafts[0].update(cx, |draft, cx| {
+                draft.replace_and_mark_text_in_range(None, "nihao", Some(5..5), window, cx);
+            });
+            view.quick_send(QuickAction::Ask, window, cx);
+            assert!(
+                agents.0.lock().unwrap().is_empty(),
+                "IME candidates must not be sent"
+            );
+            view.drafts[0].update(cx, |draft, cx| {
+                draft.replace_text_in_range(None, "你好", window, cx);
+            });
+            view.quick_send(QuickAction::Ask, window, cx);
+        })
+        .unwrap();
+    let commands = agents.0.lock().unwrap();
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], (_, AgentCommand::Send(text)) if text.contains("你好") && text.contains("翻译") && !text.contains("nihao"))
+    );
+}

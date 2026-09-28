@@ -79,3 +79,20 @@ Moli 优先以独立 CLI 接入，不把浏览器内核编入 Relay。AI 联网�
 GPUI 0.3.6 的 MacDisplay::bounds 使用 CGDisplayBounds 的尺寸，却把每块显示器的 origin 置零。因此不可用它查找全局鼠标所在屏幕，也不能用它将全局坐标转换为屏幕内坐标。现在使用 CGGetDisplaysWithPoint 得到原生显示器 ID，使用 NSScreen 的真实 frame 计算屏幕内位置，将 ID 和位置一起传给 GPUI。上下方向策略本次未修改。
 
 `cargo run -p relay-platform --example display_probe` 可只读验证本机屏幕匹配和坐标转换。本机检查通过：主屏原点 (0, 0)、1512×982、ID 1；上方副屏原点 (-126, -1080)、1920×1080、ID 3，两者分别匹配到正确的屏幕内位置。新增原点非零的左右及上下排列回归；全量 76 项测试通过。此检查读取真实屏幕信息，但不等同于窗口截图验收。
+
+
+### 选区读取与输入修正（2026-09-28）
+
+对照 EasyDict 的 `SelectionWorkflow` 和其依赖 SelectedTextKit 的 `AXManager`：主线程先固定前台应用 PID，后台用 `AXUIElementCreateApplication(pid)` 获取该应用的 `AXFocusedUIElement`，再读 `AXSelectedText` / 文本标记范围。此前 Relay 在后台查询系统当前焦点，未固定来源。这个差异已修正，但尚无该用户失败时的原生返回码，不能把它宣称为已证实的唯一根因。
+
+AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放、检查来源应用未变；仅接受剪贴板 changeCount 变化后的新文本，保存并恢复原剪贴板所有可读取格式。密码输入框和 Relay 自身不走复制回退。浏览器 AppleScript 与菜单 Copy 尚未接入。
+
+`~/Library/Logs/Relay/accessibility-startup.log` 记录 Relay 自身的授权状态；`selection-latest.log` 记录最近一次取词各 AX 属性返回码及最终字符数，不记录文字、剪贴板、标题或 URL。这些状态用于区分拒绝授权、焦点缺失、属性不支持、超时和空选区。
+
+快捷窗口改为支持应用激活的 Floating 面板，保留跨 Space/全屏行为；点击输入框激活输入上下文，避免 PopUp 层级盖住候选窗。组合输入未提交时不发送。AI 搜索、解释、翻译在输入为空时仍可打开对应面板；选区已有文字时直接发送，无需另填问题。
+
+本地打包可用 `RELAY_SIGNING_IDENTITY='<codesign identity>' cargo xtask bundle` 固定签名身份，避免 ad-hoc 的 cdhash 随重编译变化。更换签名后如 macOS 未认可原授权，需要用户在辅助功能中重新添加当前 `dist/Relay.app`。未设置身份仍采用 ad-hoc。
+
+验证：全套 77 项自动化测试通过，包括空输入点击翻译后中文组合输入提交；平台独立编译通过。Computer Use 原生连接启动失败，未完成浏览器原生取词及拼音候选窗实机验收。
+
+本机新签名版本启动诊断：Relay 进程 `AXIsProcessTrusted()` 返回 false（非终端代理查询），当前原生取词受辅助功能授权阻塞；这不证明此前未记录的失败具有同一原因。需用户授权当前 app 后继续浏览器验收。
