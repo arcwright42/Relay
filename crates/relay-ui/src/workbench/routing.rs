@@ -451,6 +451,10 @@ impl Workbench {
     pub(super) fn routing_settings(&self, cx: &mut Context<Self>) -> Div {
         let snapshot = self.routing_service.snapshot();
         let configured = snapshot.configured && snapshot.provider == self.routing.provider;
+        let external = matches!(
+            snapshot.credential_source,
+            Some(RoutingCredentialSource::Environment | RoutingCredentialSource::EnvFile)
+        );
         let provider = self.routing.provider;
         column()
             .gap(px(12.))
@@ -476,16 +480,20 @@ impl Workbench {
                     )
                     .child(
                         muted(self.text(if configured {
-                            Text::RoutingConfigured
+                            match snapshot.credential_source {
+                                Some(RoutingCredentialSource::Environment) => Text::RoutingFromEnvironment,
+                                Some(RoutingCredentialSource::EnvFile) => Text::RoutingFromEnvFile,
+                                _ => Text::RoutingConfigured,
+                            }
                         } else {
                             Text::RoutingUnconfigured
                         }))
                         .text_size(px(12.)),
                     ),
             )
-            .child(row().gap(px(8.)).children([RoutingProvider::Vercel, RoutingProvider::TypeSafe].into_iter().map(|provider| {
+            .child(row().gap(px(8.)).children([RoutingProvider::OpenRouter, RoutingProvider::Vercel, RoutingProvider::TypeSafe].into_iter().map(|provider| {
                 Button::new(provider.code()).outline().small().label(provider.name())
-                    .disabled(self.routing.saving_key)
+                    .disabled(self.routing.saving_key || external)
                     .when(provider == self.routing.provider, |button| button.primary().icon(IconName::Check))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.routing.provider = provider;
@@ -494,10 +502,11 @@ impl Workbench {
                         cx.notify();
                     }))
             })))
+            .when(external, |view| view.child(muted(self.text(Text::RoutingExternalCredential)).text_size(px(12.))))
             .child(
                 Input::new(&self.routing.key)
                     .id("jev-api-key")
-                    .disabled(self.routing.saving_key)
+                    .disabled(self.routing.saving_key || external)
                     .aria_label("Jev API key")
                     .context_menu(crate::locale::input_menu),
             )
@@ -511,6 +520,7 @@ impl Workbench {
                             .label(self.text(Text::Save))
                             .disabled(
                                 self.routing.saving_key
+                                    || external
                                     || self.routing.key.read(cx).value().trim().is_empty(),
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -522,7 +532,7 @@ impl Workbench {
                             .outline()
                             .small()
                             .label(self.text(Text::Remove))
-                        .disabled(self.routing.saving_key || !configured)
+                        .disabled(self.routing.saving_key || external || !configured)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_routing_key(true, window, cx)
                             })),
@@ -530,6 +540,7 @@ impl Workbench {
                     .child(div().flex_1())
                     .child(Button::new("get-jev-key").ghost().small().label(self.text(Text::RoutingGetKey))
                         .on_click(cx.listener(move |_, _, _, cx| cx.open_url(match provider {
+                            RoutingProvider::OpenRouter => "https://openrouter.ai/settings/keys",
                             RoutingProvider::TypeSafe => "https://console.typesafe.ai/keys",
                             RoutingProvider::Vercel => "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
                         })))),
@@ -544,6 +555,8 @@ fn routing_error_text(error: RoutingError) -> Text {
     match error {
         RoutingError::NotConfigured => Text::RoutingMissingKey,
         RoutingError::InvalidKey => Text::RoutingInvalidKey,
+        RoutingError::ConfigurationFile => Text::RoutingConfigurationFileError,
+        RoutingError::ExternallyConfigured => Text::RoutingExternalCredential,
         RoutingError::Keychain => Text::RoutingKeychainError,
         RoutingError::Unauthorized => Text::RoutingUnauthorized,
         RoutingError::RateLimited => Text::RoutingRateLimited,

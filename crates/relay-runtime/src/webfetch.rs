@@ -210,17 +210,34 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let staging = crate::installer::Staging::new(&std::env::temp_dir()).unwrap();
         let executable = staging.0.join("fake-moli");
-        let fetcher = MoliFetcher {
+        let mut fetcher = MoliFetcher {
             executable: executable.clone(),
-            timeout: Duration::from_millis(500),
             ..Default::default()
         };
-        for (script, expected) in [
-            ("#!/bin/sh\nprintf 'test page'\n", Some("test page")),
-            ("#!/bin/sh\nprintf 'failure page'\nexit 2\n", None),
-            ("#!/bin/sh\nexec /usr/bin/head -c 270000 /dev/zero\n", None),
-            ("#!/bin/sh\nexec /bin/sleep 5\n", None),
+        for (script, expected, timeout) in [
+            (
+                "#!/bin/sh\nprintf 'test page'\n",
+                Some("test page"),
+                Duration::from_secs(2),
+            ),
+            (
+                "#!/bin/sh\nprintf 'failure page'\nexit 2\n",
+                None,
+                Duration::from_secs(2),
+            ),
+            (
+                "#!/bin/sh\nexec /usr/bin/head -c 270000 /dev/zero\n",
+                None,
+                Duration::from_secs(2),
+            ),
+            (
+                "#!/bin/sh\nexec /bin/sleep 5\n",
+                None,
+                Duration::from_millis(500),
+            ),
         ] {
+            // Allow process startup under parallel load; only the hanging fixture needs a short deadline.
+            fetcher.timeout = timeout;
             std::fs::write(&executable, script).unwrap();
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
             let started = Instant::now();
@@ -229,7 +246,7 @@ mod tests {
                 Some(text) => assert_eq!(result.unwrap(), text),
                 None => assert!(result.is_err()),
             }
-            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(started.elapsed() < timeout + Duration::from_secs(1));
             assert_eq!(fetcher.active.load(Ordering::Acquire), 0);
         }
         fetcher.shutdown();
