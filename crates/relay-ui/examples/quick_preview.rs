@@ -1,8 +1,9 @@
 //! Render real views with fixtures through Metal, without desktop automation
 //! or a live agent. Add `--workspace` after the output folder for main app pages.
+//! Add `--memory` with `--workspace` to preview project memory dialogs.
 use gpui_kit::{
     assets::AllAssets,
-    component::{Root, Theme, ThemeMode},
+    component::{Root, Theme, ThemeMode, WindowExt},
     test::TestWindowExt,
     *,
 };
@@ -65,9 +66,36 @@ impl ProjectService for Fixtures {
                     description: String::new(),
                     instructions: String::new(),
                     context: vec![],
+                    memory: vec![],
                 })
                 .collect(),
         }
+    }
+    fn apply(&self, _: ProjectCommand) -> Result<ProjectId, String> {
+        Err("fixture".into())
+    }
+}
+struct MemoryFixtures;
+impl ProjectService for MemoryFixtures {
+    fn snapshot(&self) -> ProjectCatalog {
+        let mut catalog = ProjectService::snapshot(&Fixtures);
+        catalog.projects[0].memory = vec![
+            MemoryItem {
+                id: MemoryId(1),
+                kind: MemoryKind::Fact,
+                name: "项目上下文独立于 Harness 保存".into(),
+                content: "Relay 保存项目资料、事实和决策，新的 ACP 会话从当前项目快照继续工作。".into(),
+                source: None,
+            },
+            MemoryItem {
+                id: MemoryId(2),
+                kind: MemoryKind::Decision,
+                name: "首版记忆复用现有项目存储与上下文增量同步，保持轻量".into(),
+                content: "用户显式保存事实或决策；主对话共享项目记忆，后续再扩展任务线程和已有 Harness 会话导入。".into(),
+                source: Some(MemorySource::Message { message_id: 2 }),
+            },
+        ];
+        catalog
     }
     fn apply(&self, _: ProjectCommand) -> Result<ProjectId, String> {
         Err("fixture".into())
@@ -185,6 +213,7 @@ fn main() -> gpui_kit::Result<()> {
 }
 
 fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
+    let memory = std::env::args().any(|arg| arg == "--memory");
     for (name, width, height) in [("wide", 1440., 900.), ("compact", 960., 640.)] {
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
@@ -194,6 +223,9 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
         cx.update(|cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Light, None, cx);
+            if memory {
+                cx.set_reduce_motion(true);
+            }
         });
         let agents = Arc::new(FixtureAgent(
             Mutex::new(AgentSnapshot {
@@ -203,11 +235,16 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             false,
         ));
         let handle = cx.open_window(size(px(width), px(height)), |window, cx| {
+            let projects: Arc<dyn ProjectService> = if memory {
+                Arc::new(MemoryFixtures)
+            } else {
+                Arc::new(Fixtures)
+            };
             let view = cx.new(|cx| {
                 Workbench::new(
                     agents,
                     Arc::new(Fixtures),
-                    Arc::new(Fixtures),
+                    projects,
                     Arc::new(Fixtures),
                     window,
                     cx,
@@ -241,6 +278,23 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             })?;
             cx.capture_screenshot(handle.into())?
                 .save(folder.join(format!("{page}-{name}.png")))?;
+            if memory && page == "project" {
+                for (dialog, target) in [
+                    ("memory", ElementId::from("project-memory")),
+                    ("memory-editor", ElementId::from(("edit-memory", 2_u64))),
+                ] {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        window.click(target, cx);
+                    })?;
+                    cx.run_until_parked();
+                    cx.capture_screenshot(handle.into())?
+                        .save(folder.join(format!("{dialog}-{name}.png")))?;
+                }
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.close_dialog(cx);
+                    window.close_dialog(cx);
+                })?;
+            }
         }
     }
     println!("Rendered workspace previews: {}", folder.display());

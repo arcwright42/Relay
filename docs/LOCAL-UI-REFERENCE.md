@@ -22,3 +22,5 @@
 ## 验证方式
 
 `cargo run -p relay-ui --example quick_preview -- /tmp/relay-workspace-preview --workspace` 用夹具渲染真实 GPUI 组件，输出 1440×900 与 960×640 下的首页、项目空白页、智能体和设置页面；使用与应用相同的完整图标资源。该预览不访问真实项目、不连接 Agent，也不代替原生桌面交互验收。
+
+追加 `--memory` 可用隔离的事实/决策夹具检查项目记忆列表和编辑弹窗，额外输出 `memory-*.png` 与 `memory-editor-*.png`。表单保存、编辑、移除和完整回复转存通过 GPUI 鼠标/键盘事件测试验证。

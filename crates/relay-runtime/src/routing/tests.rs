@@ -24,6 +24,15 @@ impl Default for Projects {
                     content: "PRIVATE_NOTE".into(),
                     included: true,
                 }],
+                memory: (1..=4)
+                    .map(|id| relay_core::MemoryItem {
+                        id: relay_core::MemoryId(id),
+                        kind: relay_core::MemoryKind::Fact,
+                        name: format!("Routing title {id} {}", "中".repeat(85)),
+                        content: "PRIVATE_MEMORY_CONTENT".into(),
+                        source: Some(relay_core::MemorySource::Message { message_id: 999 }),
+                    })
+                    .collect(),
             }],
         }))
     }
@@ -154,7 +163,24 @@ fn actual_http_uses_documented_schema_and_excludes_full_context() {
     assert_eq!(body["model"], MODEL);
     assert_eq!(body["questions"]["destination"]["type"], "choice");
     assert!(request.contains("Build the workspace"));
-    for excluded in ["PRIVATE_NOTE", "PRIVATE_REPLY", "PRIVATE_INSTRUCTIONS"] {
+    let titles =
+        body["questions"]["destination"]["criteria"]["project_42"]["project_memory_titles"]
+            .as_array()
+            .unwrap();
+    assert_eq!(titles.len(), 3);
+    for (title, id) in titles.iter().zip([4, 3, 2]) {
+        let title = title.as_str().unwrap();
+        assert!(title.starts_with(&format!("Routing title {id} ")));
+        assert_eq!(title.chars().count(), 80);
+    }
+    assert!(!request.contains("Routing title 1"));
+    for excluded in [
+        "PRIVATE_NOTE",
+        "PRIVATE_REPLY",
+        "PRIVATE_INSTRUCTIONS",
+        "PRIVATE_MEMORY_CONTENT",
+        "source_message_id",
+    ] {
         assert!(!request.contains(excluded));
     }
 }

@@ -6,6 +6,8 @@ pub const MAX_INSTRUCTIONS_CHARS: usize = 8_000;
 pub const MAX_ITEM_CHARS: usize = 12_000;
 pub const MAX_SELECTED_CONTEXT_CHARS: usize = 32_000;
 pub const MAX_CONTEXT_ITEMS: usize = 64;
+pub const MAX_MEMORY_ITEMS: usize = 32;
+pub const MAX_MEMORY_CHARS: usize = 4_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ContextId(pub u64);
@@ -18,6 +20,49 @@ pub struct ContextItem {
     pub included: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemoryId(pub u64);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MemoryKind {
+    #[default]
+    Fact,
+    Decision,
+}
+
+impl MemoryKind {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Decision => "decision",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "fact" => Some(Self::Fact),
+            "decision" => Some(Self::Decision),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemorySource {
+    /// A visible message in this project's Relay conversation, not a native ACP ID.
+    Message { message_id: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemoryItem {
+    pub id: MemoryId,
+    pub kind: MemoryKind,
+    pub name: String,
+    pub content: String,
+    /// None denotes a manually authored entry. Edits retain the original source.
+    pub source: Option<MemorySource>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     pub id: ProjectId,
@@ -26,6 +71,7 @@ pub struct Project {
     pub description: String,
     pub instructions: String,
     pub context: Vec<ContextItem>,
+    pub memory: Vec<MemoryItem>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -66,6 +112,20 @@ pub enum ProjectCommand {
         project: ProjectId,
         expected_revision: u64,
         id: ContextId,
+    },
+    SaveMemory {
+        project: ProjectId,
+        expected_revision: u64,
+        id: Option<MemoryId>,
+        kind: MemoryKind,
+        name: String,
+        content: String,
+        source: Option<MemorySource>,
+    },
+    RemoveMemory {
+        project: ProjectId,
+        expected_revision: u64,
+        id: MemoryId,
     },
 }
 
