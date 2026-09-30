@@ -3,6 +3,14 @@ use crate::i18n::{agent_text, choice_name, config_name, status_text};
 use gpui_kit::component::popover::Popover;
 
 impl Workbench {
+    pub(super) fn needs_connection_notice(&self) -> bool {
+        let state = &self.agent_states[self.selected_project];
+        state.status != ConnectionStatus::Ready
+            || state.error.is_some()
+            || self.agent_errors[self.selected_project].is_some()
+            || state.pending_config.is_some()
+    }
+
     pub(super) fn refresh_agents(&mut self, cx: &mut Context<Self>) {
         let revision = self.agent_service.revision();
         if revision == self.agent_revision {
@@ -16,7 +24,9 @@ impl Workbench {
             .iter()
             .map(|p| self.agent_service.snapshot(p.id))
             .collect();
-        if follow {
+        // Compact answers should remain where the user is reading while text
+        // streams in; the workspace conversation follows its live tail.
+        if follow && self.quick.is_none() {
             self.conversation_scroll.scroll_to_bottom();
         }
         cx.notify();
@@ -238,14 +248,38 @@ impl Workbench {
                         .icon(icon(IconName::Settings).size(px(15.)))
                         .label(self.text(Text::ManageAgents))
                         .text_size(px(12.))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.navigate(Page::Agents, window, cx)
-                        })),
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.manage_agents(window, cx)),
+                        ),
                 ),
             )
     }
 
-    fn connect_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
+    pub(super) fn manage_agents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.picker_open = false;
+        if self.quick.is_some() {
+            cx.emit(super::OpenAgentSettings(
+                self.projects[self.selected_project].id,
+            ));
+            // Deliver the event before dropping the emitting view/subscription.
+            window.defer(cx, |window, _| window.remove_window());
+        } else {
+            self.navigate(Page::Agents, window, cx);
+        }
+    }
+
+    pub fn open_agent_settings(
+        &mut self,
+        project: relay_core::ProjectId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_project(project, window, cx);
+        self.navigate(Page::Agents, window, cx);
+        self.agent_action(AgentCommand::DiscoverLocal, cx);
+    }
+
+    pub(super) fn connect_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
         let state = &self.agent_states[self.selected_project];
         let source = state.source.clone();
         Button::new(id)
@@ -438,28 +472,24 @@ impl Workbench {
                 .id("agent-settings-scroll")
                 .flex_1()
                 .min_h_0()
+                .w_full()
+                .max_w(px(CONTENT_WIDTH + 64.))
+                .mx_auto()
                 .overflow_y_scroll()
-                .px(px(55.))
-                .py(px(34.))
-                .gap(px(22.))
-                .child(
-                    div()
-                        .text_size(px(30.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(self.text(Text::AgentsTitle)),
-                )
+                .px(px(32.))
+                .py(px(24.))
+                .gap(px(18.))
                 .child(
                     muted(
                         self.text(Text::ConnectForProject)
                             .replace("{project}", &self.projects[self.selected_project].name),
                     )
-                    .text_size(px(16.)),
+                    .text_size(px(13.)),
                 )
                 .child(
                     column()
                         .w_full()
-                        .max_w(px(790.))
-                        .p(px(24.))
+                        .p(px(20.))
                         .gap(px(20.))
                         .rounded(px(16.))
                         .border_1()
@@ -470,24 +500,18 @@ impl Workbench {
                                 .child(
                                     row()
                                         .justify_center()
-                                        .size(px(44.))
-                                        .rounded(px(12.))
+                                        .size(px(36.))
+                                        .rounded(px(10.))
                                         .bg(rgb(0xf0f0f2))
-                                        .child(icon(IconName::Sparkles).size(px(23.))),
+                                        .child(icon(IconName::Sparkles).size(px(20.))),
                                 )
                                 .child(
-                                    column()
-                                        .flex_1()
-                                        .gap(px(5.))
-                                        .child(
-                                            div()
-                                                .text_size(px(19.))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child("Codex"),
-                                        )
-                                        .child(
-                                            muted(self.text(Text::CodexDetail)).text_size(px(12.)),
-                                        ),
+                                    column().flex_1().gap(px(5.)).child(
+                                        div()
+                                            .text_size(px(17.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Codex"),
+                                    ),
                                 )
                                 .when(!connected, |view| {
                                     view.child(self.connect_button("setup-codex", cx))
@@ -605,6 +629,7 @@ impl Workbench {
                                                 .ghost()
                                                 .small()
                                                 .label(self.text(Text::ChooseFolder))
+                                                .tooltip(self.text(Text::WorkingFolderDetail))
                                                 .disabled(state.status.is_busy())
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.choose_agent_path(true, cx)
@@ -614,9 +639,6 @@ impl Workbench {
                                 .child(
                                     muted(state.working_directory.display().to_string())
                                         .text_size(px(11.)),
-                                )
-                                .child(
-                                    muted(self.text(Text::WorkingFolderDetail)).text_size(px(12.)),
                                 ),
                         )
                         .when(state.status == ConnectionStatus::Ready, |view| {

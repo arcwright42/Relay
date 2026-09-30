@@ -9,8 +9,7 @@ impl Workbench {
             state.status,
             ConnectionStatus::Running | ConnectionStatus::Cancelling
         );
-        column()
-            .w_full()
+        composer_surface()
             .when(self.routing.pending_send.is_some(), |view| {
                 view.child(
                     row()
@@ -29,17 +28,12 @@ impl Workbench {
                         ),
                 )
             })
-            .p(px(13.))
-            .rounded(px(18.))
-            .border_1()
-            .border_color(rgb(0xdfdfe4))
-            .bg(rgb(SURFACE))
             .child(
                 Textarea::new(draft)
                     .appearance(false)
                     .bordered(false)
-                    .text_size(px(17.))
-                    .h(px(65.))
+                    .text_size(px(15.))
+                    .h(px(68.))
                     .aria_label(self.text(Text::MessageAgent))
                     .context_menu(crate::locale::input_menu),
             )
@@ -48,55 +42,13 @@ impl Workbench {
                     .justify_between()
                     .mt(px(4.))
                     .child(
-                        row()
-                            .gap(px(6.))
-                            .child(
-                                icon_button("add", IconName::Plus, self.text(Text::AddToMessage))
-                                    .rounded(px(18.))
-                                    .bg(rgb(0xf4f4f5))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_context(window, cx)
-                                    })),
-                            )
-                            .child(
-                                icon_button(
-                                    "attach",
-                                    IconName::Paperclip,
-                                    self.text(Text::AttachFile),
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, window, cx| {
-                                        explain(
-                                            this.text(Text::AttachFile),
-                                            this.text(Text::AttachFileDetail),
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                )),
-                            )
-                            .child(
-                                icon_button("image", IconName::Image, self.text(Text::AddImage))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        explain(
-                                            this.text(Text::AddImage),
-                                            this.text(Text::AddImageDetail),
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new("composer-context")
-                                    .ghost()
-                                    .icon(icon(IconName::Layers).size(px(16.)))
-                                    .label(self.text(Text::AddContext))
-                                    .text_size(px(12.))
-                                    .text_color(rgb(0x7c7c82))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_context(window, cx)
-                                    })),
-                            ),
+                        icon_button(
+                            "composer-context",
+                            IconName::Plus,
+                            self.text(Text::AddContext),
+                        )
+                        .rounded_full()
+                        .on_click(cx.listener(|this, _, window, cx| this.show_context(window, cx))),
                     )
                     .child(
                         row()
@@ -107,9 +59,8 @@ impl Workbench {
                                     Button::new("send")
                                         .primary()
                                         .icon(icon(IconName::ArrowUp).text_color(rgb(0xffffff)))
-                                        .size(px(35.))
-                                        .rounded(px(9.))
-                                        .bg(rgb(0x353537))
+                                        .size(px(32.))
+                                        .rounded_full()
                                         .disabled(
                                             is_empty
                                                 || state.status.is_busy()
@@ -127,9 +78,8 @@ impl Workbench {
                                     Button::new("stop-response")
                                         .primary()
                                         .icon(icon(IconName::Square).text_color(rgb(0xffffff)))
-                                        .size(px(35.))
-                                        .rounded(px(9.))
-                                        .bg(rgb(0x353537))
+                                        .size(px(32.))
+                                        .rounded_full()
                                         .disabled(state.status == ConnectionStatus::Cancelling)
                                         .tooltip(self.text(Text::StopResponse))
                                         .accessibility_label(self.text(Text::StopResponse))
@@ -163,7 +113,7 @@ impl Workbench {
                     .child(
                         column()
                             .w_full()
-                            .max_w(px(800.))
+                            .max_w(px(CONTENT_WIDTH))
                             .gap(px(27.))
                             .py(px(20.))
                             .children(state.messages.iter().map(|message| {
@@ -272,12 +222,14 @@ impl Workbench {
             .child(
                 column()
                     .w_full()
-                    .max_w(px(800.))
+                    .max_w(px(CONTENT_WIDTH))
                     .gap(px(10.))
                     .flex_shrink_0()
                     .child(self.permission_cards(cx))
                     .child(self.composer(cx))
-                    .child(self.connection_notice(cx)),
+                    .when(self.needs_connection_notice(), |view| {
+                        view.child(self.connection_notice(cx))
+                    }),
             )
     }
 
@@ -293,10 +245,10 @@ impl Workbench {
             .ghost()
             .icon(icon(glyph).size(px(17.)))
             .label(title)
-            .h(px(42.))
-            .px(px(18.))
-            .rounded(px(23.))
-            .bg(rgb(0xf6f6f7))
+            .h(px(34.))
+            .px(px(12.))
+            .rounded(px(17.))
+            .text_color(rgb(0x73737a))
             .text_size(px(12.))
             .on_click(cx.listener(move |this, _, window, cx| this.use_prompt(prompt, window, cx)))
     }
@@ -308,95 +260,49 @@ impl Workbench {
             .items_center()
             .justify_center()
             .px(px(if compact { 28. } else { 48. }))
-            .pb(px(57.))
+            .pb(px(96.))
             .child(
                 column()
                     .w_full()
-                    .max_w(px(728.))
+                    .max_w(px(CONTENT_WIDTH))
                     .items_center()
                     .child(
                         div()
-                            .text_size(px(if compact { 29. } else { 36. }))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(self.text(Text::Greeting)),
+                            .text_size(px(28.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(self.text(Text::WelcomePrompt)),
                     )
+                    .child(div().w_full().mt(px(26.)).child(self.composer(cx)))
+                    .when(self.needs_connection_notice(), |view| {
+                        view.child(div().w_full().mt(px(10.)).child(self.connection_notice(cx)))
+                    })
                     .child(
-                        muted(self.text(Text::WelcomePrompt))
-                            .text_size(px(if compact { 18. } else { 24. }))
-                            .mt(px(7.)),
-                    )
-                    .child(div().w_full().mt(px(35.)).child(self.composer(cx)))
-                    .child(div().w_full().mt(px(10.)).child(self.connection_notice(cx)))
-                    .child(
-                        column()
-                            .items_center()
+                        row()
+                            .justify_center()
                             .gap(px(12.))
-                            .mt(px(24.))
-                            .child(
-                                row()
-                                    .justify_center()
-                                    .gap(px(10.))
-                                    .flex_wrap()
-                                    .child(self.quick_action(
-                                        0,
-                                        IconName::FileText,
-                                        self.text(Text::Summarize),
-                                        self.text(Text::SummarizePrompt),
-                                        cx,
-                                    ))
-                                    .child(self.quick_action(
-                                        1,
-                                        IconName::ChartNoAxesColumn,
-                                        self.text(Text::Analyze),
-                                        self.text(Text::AnalyzePrompt),
-                                        cx,
-                                    ))
-                                    .child(self.quick_action(
-                                        2,
-                                        IconName::Scale,
-                                        self.text(Text::Compare),
-                                        self.text(Text::ComparePrompt),
-                                        cx,
-                                    )),
-                            )
-                            .child(
-                                row()
-                                    .justify_center()
-                                    .gap(px(10.))
-                                    .flex_wrap()
-                                    .child(self.quick_action(
-                                        3,
-                                        IconName::Sparkles,
-                                        self.text(Text::PlanProject),
-                                        self.text(Text::PlanPrompt),
-                                        cx,
-                                    ))
-                                    .child(self.quick_action(
-                                        4,
-                                        IconName::Image,
-                                        self.text(Text::GenerateDesign),
-                                        self.text(Text::DesignPrompt),
-                                        cx,
-                                    ))
-                                    .child(
-                                        Button::new("more-actions")
-                                            .ghost()
-                                            .icon(icon(IconName::Ellipsis))
-                                            .label(self.text(Text::More))
-                                            .h(px(42.))
-                                            .px(px(18.))
-                                            .rounded(px(23.))
-                                            .bg(rgb(0xf6f6f7))
-                                            .text_size(px(12.))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.use_prompt(
-                                                    this.text(Text::MorePrompt),
-                                                    window,
-                                                    cx,
-                                                );
-                                            })),
-                                    ),
-                            ),
+                            .mt(px(18.))
+                            .flex_wrap()
+                            .child(self.quick_action(
+                                1,
+                                IconName::ChartNoAxesColumn,
+                                self.text(Text::Analyze),
+                                self.text(Text::AnalyzePrompt),
+                                cx,
+                            ))
+                            .child(self.quick_action(
+                                2,
+                                IconName::Scale,
+                                self.text(Text::Compare),
+                                self.text(Text::ComparePrompt),
+                                cx,
+                            ))
+                            .child(self.quick_action(
+                                3,
+                                IconName::Sparkles,
+                                self.text(Text::PlanProject),
+                                self.text(Text::PlanPrompt),
+                                cx,
+                            )),
                     ),
             )
     }

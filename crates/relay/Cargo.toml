@@ -15,6 +15,7 @@ gpui-kit.workspace = true
 relay-core.workspace = true
 relay-runtime.workspace = true
 relay-ui.workspace = true
+relay-platform.workspace = true
 
 [lints]
 workspace = true

@@ -8,5 +8,8 @@ mod locale;
 mod preview;
 mod workbench;
 
-pub use locale::{Quit, apply_language};
-pub use workbench::{FocusSearch, SendMessage, Workbench};
+pub use locale::{OpenQuick, OpenWorkspace, Quit, apply_language};
+pub use workbench::{
+    FocusSearch, OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick, SendMessage,
+    Workbench,
+};

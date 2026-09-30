@@ -289,24 +289,23 @@ impl Workbench {
             Text::RoutingCreating
         } else if self.routing.busy {
             Text::RoutingWorking
-        } else {
+        } else if self.routing_service.snapshot().configured {
             Text::RoutingHint
+        } else {
+            Text::RoutingManualHint
         };
         column()
             .gap(px(12.))
-            .mb(px(20.))
             .child(
-                column()
-                    .p(px(16.))
+                composer_surface()
                     .gap(px(10.))
-                    .bg(rgb(SURFACE))
-                    .rounded(px(18.))
-                    .border_1()
-                    .border_color(rgb(LINE))
                     .child(
                         column().id("home-prompt").test_support().child(
                             Textarea::new(&self.routing.draft)
-                                .h(px(90.))
+                                .appearance(false)
+                                .bordered(false)
+                                .text_size(px(15.))
+                                .h(px(68.))
                                 .disabled(busy)
                                 .aria_label(self.text(Text::AskRelay))
                                 .context_menu(crate::locale::input_menu),
@@ -316,7 +315,17 @@ impl Workbench {
                         row()
                             .justify_between()
                             .gap(px(12.))
-                            .child(muted(self.text(status)).text_size(px(12.)))
+                            .child(
+                                row()
+                                    .gap(px(7.))
+                                    .pl(px(5.))
+                                    .child(
+                                        icon(IconName::FolderClosed)
+                                            .size(px(15.))
+                                            .text_color(rgb(MUTED)),
+                                    )
+                                    .child(muted(self.text(status)).text_size(px(12.))),
+                            )
                             .child(
                                 row()
                                     .gap(px(8.))
@@ -334,7 +343,15 @@ impl Workbench {
                                     .child(
                                         Button::new("route-prompt")
                                             .primary()
-                                            .label(self.text(Text::SendMessage))
+                                            .icon(
+                                                icon(IconName::ArrowUp)
+                                                    .size(px(18.))
+                                                    .text_color(rgb(0xffffff)),
+                                            )
+                                            .size(px(32.))
+                                            .rounded_full()
+                                            .tooltip(self.text(Text::SendTooltip))
+                                            .accessibility_label(self.text(Text::SendMessage))
                                             .disabled(
                                                 busy || unavailable || self.project_error.is_some(),
                                             )
@@ -444,7 +461,19 @@ impl Workbench {
             .child(
                 row()
                     .justify_between()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Jev"))
+                    .child(
+                        row().gap(px(6.))
+                            .child(div().font_weight(FontWeight::MEDIUM).child(self.text(Text::RoutingSettings)))
+                            .child(icon_button("routing-info", IconName::Info, self.text(Text::RoutingHelp))
+                                .size(px(24.))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    explain(
+                                        this.text(Text::RoutingHelp),
+                                        format!("{}\n\n{}\n\n{}", this.text(Text::RoutingSettingsDetail), this.text(Text::RoutingProviderHint), this.text(Text::RoutingDataDetail)),
+                                        window, cx,
+                                    );
+                                }))),
+                    )
                     .child(
                         muted(self.text(if configured {
                             Text::RoutingConfigured
@@ -454,9 +483,8 @@ impl Workbench {
                         .text_size(px(12.)),
                     ),
             )
-            .child(muted(self.text(Text::RoutingSettingsDetail)).text_size(px(13.)))
             .child(row().gap(px(8.)).children([RoutingProvider::Vercel, RoutingProvider::TypeSafe].into_iter().map(|provider| {
-                Button::new(provider.code()).outline().label(provider.name())
+                Button::new(provider.code()).outline().small().label(provider.name())
                     .disabled(self.routing.saving_key)
                     .when(provider == self.routing.provider, |button| button.primary().icon(IconName::Check))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -466,7 +494,6 @@ impl Workbench {
                         cx.notify();
                     }))
             })))
-            .child(muted(self.text(Text::RoutingProviderHint)).text_size(px(12.)))
             .child(
                 Input::new(&self.routing.key)
                     .id("jev-api-key")
@@ -480,6 +507,7 @@ impl Workbench {
                     .child(
                         Button::new("save-jev-key")
                             .primary()
+                            .small()
                             .label(self.text(Text::Save))
                             .disabled(
                                 self.routing.saving_key
@@ -492,22 +520,23 @@ impl Workbench {
                     .child(
                         Button::new("remove-jev-key")
                             .outline()
+                            .small()
                             .label(self.text(Text::Remove))
                         .disabled(self.routing.saving_key || !configured)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_routing_key(true, window, cx)
                             })),
-                    ),
+                    )
+                    .child(div().flex_1())
+                    .child(Button::new("get-jev-key").ghost().small().label(self.text(Text::RoutingGetKey))
+                        .on_click(cx.listener(move |_, _, _, cx| cx.open_url(match provider {
+                            RoutingProvider::TypeSafe => "https://console.typesafe.ai/keys",
+                            RoutingProvider::Vercel => "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
+                        })))),
             )
-            .child(Button::new("get-jev-key").ghost().label(self.text(Text::RoutingGetKey))
-                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(match provider {
-                    RoutingProvider::TypeSafe => "https://console.typesafe.ai/keys",
-                    RoutingProvider::Vercel => "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys",
-                }))))
             .when_some(self.routing.key_error.or(snapshot.error), |view, error| {
                 view.child(muted(self.text(routing_error_text(error))).text_size(px(12.)))
             })
-            .child(muted(self.text(Text::RoutingDataDetail)).text_size(px(12.)))
     }
 }
 

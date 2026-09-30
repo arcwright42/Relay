@@ -13,6 +13,8 @@ pub struct SavedProject {
     #[serde(default = "format_version")]
     pub version: u32,
     pub local_codex: Option<PathBuf>,
+    #[serde(flatten)]
+    pub identity: SavedIdentity,
     pub cwd: Option<PathBuf>,
     pub session_id: Option<String>,
     pub session_key: Option<String>,
@@ -24,6 +26,25 @@ pub struct SavedProject {
     pub preferences: BTreeMap<String, String>,
     #[serde(default)]
     pub messages: Vec<SavedMessage>,
+}
+
+/// Keep v3 harness metadata intact until the user explicitly connects Codex.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct SavedIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_executable: Option<PathBuf>,
+}
+
+impl SavedIdentity {
+    pub fn is_codex(&self) -> bool {
+        self.harness.as_deref().is_none_or(|name| name == "codex")
+    }
 }
 fn format_version() -> u32 {
     1
@@ -110,11 +131,15 @@ pub fn load(root: &Path, project: ProjectId) -> Result<SavedProject> {
             ..Default::default()
         });
     }
-    let bytes = fs::read(path)?;
+    let bytes = fs::read(&path).with_context(|| format!("Reading {}", path.display()))?;
     let saved: SavedProject =
-        serde_json::from_slice(&bytes).context("Reading project conversation")?;
-    if !matches!(saved.version, 1 | 2) {
-        bail!("This project was saved by a newer Relay version.");
+        serde_json::from_slice(&bytes).with_context(|| format!("Reading {}", path.display()))?;
+    if !matches!(saved.version, 1..=3) {
+        bail!(
+            "Unsupported conversation format v{} in {}. This Relay supports v1–v3. The file has been preserved.",
+            saved.version,
+            path.display()
+        );
     }
     if saved
         .context_checkpoint

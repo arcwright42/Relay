@@ -2,12 +2,16 @@
 mod context;
 #[cfg(all(test, feature = "test-support"))]
 mod delivery_tests;
+mod diagnostics;
 mod installer;
 mod metrics;
+mod moli_installer;
 mod projects;
 mod routing;
 mod settings;
 mod store;
+mod webfetch;
+pub use webfetch::MoliFetcher;
 
 pub use projects::ProjectStore;
 pub use routing::JevRouter;
@@ -28,6 +32,8 @@ use std::{
 
 struct ProjectState {
     view: AgentSnapshot,
+    storage_version: u32,
+    stored_identity: store::SavedIdentity,
     generation: u64,
     session_id: Option<String>,
     session_key: Option<String>,
@@ -48,7 +54,8 @@ struct PendingTurn {
 impl ProjectState {
     fn saved(&self) -> store::SavedProject {
         store::SavedProject {
-            version: 2,
+            version: self.storage_version.max(2),
+            identity: self.stored_identity.clone(),
             local_codex: match &self.view.source {
                 AgentSource::Managed => None,
                 AgentSource::Local(path) => Some(path.clone()),
@@ -65,6 +72,28 @@ impl ProjectState {
                 .iter()
                 .map(store::SavedMessage::from_message)
                 .collect(),
+        }
+    }
+
+    fn use_codex(&mut self, source: &AgentSource) {
+        // Another harness's session IDs, model preferences and acknowledged
+        // context cannot be reused by Codex. Preserve the visible transcript.
+        if !self.stored_identity.is_codex() || self.stored_identity.provider.is_some() {
+            self.session_id = None;
+            self.session_key = None;
+            self.preferences.clear();
+            self.context_checkpoint = context::Checkpoint::default();
+            self.needs_history = !self.view.messages.is_empty();
+        }
+        if self.storage_version >= 3 {
+            self.stored_identity = store::SavedIdentity {
+                harness: Some("codex".into()),
+                local_executable: match source {
+                    AgentSource::Local(path) => Some(path.clone()),
+                    AgentSource::Managed => None,
+                },
+                ..Default::default()
+            };
         }
     }
 }
@@ -123,6 +152,12 @@ impl Shared {
             state.saved()
         };
         if let Err(error) = store::save(&self.root, project, &saved) {
+            diagnostics::error(
+                &self.root,
+                project,
+                "conversation.save",
+                &format!("{error:#}"),
+            );
             if let Some(state) = self
                 .projects
                 .lock()
@@ -138,6 +173,11 @@ impl Shared {
     }
 
     fn event(&self, project: ProjectId, generation: u64, event: Event) {
+        if let Event::Error { message, .. } = &event
+            && self.valid(project, generation)
+        {
+            diagnostics::error(&self.root, project, "agent.event", message);
+        }
         let mut persist = false;
         if !self.update(project, generation, |state| match event {
             Event::AuthenticationRequired(methods) => {
@@ -294,12 +334,23 @@ impl AgentRuntime {
         let mut projects = BTreeMap::new();
         for id in project_service.snapshot().projects.iter().map(|p| p.id) {
             let loaded = store::load(&root, id);
-            let error = loaded.as_ref().err().map(|e| format!("Could not read this project's saved conversation: {e}. The existing file has been preserved."));
+            let error = loaded.as_ref().err().map(|e| {
+                let message = format!("Could not read this project's saved conversation: {e:#}. The existing file has been preserved.");
+                diagnostics::error(&root, id, "conversation.load", &message);
+                message
+            });
             let saved = loaded.unwrap_or_default();
+            let local_codex = if saved.identity.is_codex() {
+                saved
+                    .identity
+                    .local_executable
+                    .clone()
+                    .or(saved.local_codex)
+            } else {
+                None
+            };
             let view = AgentSnapshot {
-                source: saved
-                    .local_codex
-                    .map_or(AgentSource::Managed, AgentSource::Local),
+                source: local_codex.map_or(AgentSource::Managed, AgentSource::Local),
                 installed,
                 working_directory: saved.cwd.unwrap_or_else(|| {
                     root.join("projects")
@@ -319,6 +370,8 @@ impl AgentRuntime {
                 id,
                 ProjectState {
                     view,
+                    storage_version: saved.version,
+                    stored_identity: saved.identity,
                     generation: 0,
                     session_id: saved.session_id,
                     session_key: saved.session_key,
@@ -362,6 +415,8 @@ impl AgentRuntime {
         let mut projects = self.shared.projects.lock().expect("project lock");
         if let std::collections::btree_map::Entry::Vacant(entry) = projects.entry(id) {
             entry.insert(ProjectState {
+                storage_version: 2,
+                stored_identity: store::SavedIdentity::default(),
                 view: AgentSnapshot {
                     working_directory: self
                         .shared
@@ -389,12 +444,15 @@ impl AgentRuntime {
             let mut projects = self.shared.projects.lock().expect("project lock");
             let state = projects.get_mut(&project).ok_or("Unknown project")?;
             if state.storage_error {
-                return Err("The saved conversation could not be read. Resolve the storage error before connecting.".into());
+                let error = state.view.error.clone().unwrap_or_else(|| "The saved conversation could not be read. Resolve the storage error before connecting.".into());
+                diagnostics::error(&self.shared.root, project, "agent.connect", &error);
+                return Err(error);
             }
             if state.view.status.is_busy() {
                 return Err("Wait for the current operation to finish, or stop it first.".into());
             }
             state.generation += 1;
+            state.use_codex(&source);
             state.view.source = source.clone();
             let saved = (state.session_key.as_ref() == Some(&session_key(&state.view)))
                 .then(|| state.session_id.clone())
@@ -938,6 +996,103 @@ fn history_context(messages: &[ChatMessage]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_error_logs_actual_cause_and_connect_preserves_it() {
+        let root =
+            std::env::temp_dir().join(format!("relay-storage-error-{}", installer::unique_id()));
+        let projects = Arc::new(ProjectStore::new(root.clone()));
+        let path = root.join("projects/1/conversation.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = br#"{"version":99,"messages":[]}"#;
+        std::fs::write(&path, original).unwrap();
+        let runtime = AgentRuntime::new(root.clone(), projects);
+        let cause = runtime.snapshot(ProjectId(1)).error.unwrap();
+        assert!(cause.contains("v99"));
+        assert!(cause.contains("conversation.json"));
+        let rejected = runtime
+            .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Managed))
+            .unwrap_err();
+        assert_eq!(cause, rejected, "connect must not mask the storage cause");
+        runtime.shutdown();
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let logs = std::fs::read_to_string(root.join("logs/runtime.jsonl")).unwrap();
+        let records: Vec<serde_json::Value> = logs
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["operation"], "conversation.load");
+        assert_eq!(records[1]["operation"], "agent.connect");
+        assert_eq!(records[0]["error"], cause);
+        assert_eq!(records[1]["error"], cause);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn v3_history_and_identity_survive_reload_until_codex_is_chosen() {
+        for harness in ["codex", "opencode"] {
+            let root = std::env::temp_dir().join(format!("relay-v3-{}", installer::unique_id()));
+            let projects = Arc::new(ProjectStore::new(root.clone()));
+            let path = root.join("projects/1/conversation.json");
+            let original = serde_json::json!({
+                "version":3, "harness":harness, "provider":7, "provider_revision":2,
+                "local_executable":"/test/local-agent", "session_id":"other-session",
+                "session_key":"other-key", "preferences":{"model":"other-model"},
+                "messages":[{"id":1,"role":"assistant","text":"Keep this conversation","complete":true}]
+            });
+            store::write_json(&path, &original).unwrap();
+            let runtime = AgentRuntime::new(root.clone(), projects);
+            let snapshot = runtime.snapshot(ProjectId(1));
+            assert!(snapshot.error.is_none());
+            assert_eq!(snapshot.messages[0].text, "Keep this conversation");
+            assert_eq!(
+                snapshot.source,
+                if harness == "codex" {
+                    AgentSource::Local("/test/local-agent".into())
+                } else {
+                    AgentSource::Managed
+                }
+            );
+            runtime.shared.persist(ProjectId(1));
+            let before: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            for key in [
+                "version",
+                "harness",
+                "provider",
+                "provider_revision",
+                "local_executable",
+                "session_id",
+                "session_key",
+                "preferences",
+            ] {
+                assert_eq!(
+                    before[key], original[key],
+                    "preserve {key} before any connection"
+                );
+            }
+            {
+                let mut states = runtime.shared.projects.lock().unwrap();
+                let state = states.get_mut(&ProjectId(1)).unwrap();
+                let source = AgentSource::Local("/test/codex".into());
+                state.use_codex(&source);
+                state.view.source = source;
+                assert!(state.needs_history);
+                assert!(state.session_id.is_none());
+                assert!(state.preferences.is_empty());
+            }
+            runtime.shutdown();
+            let after = store::load(&root, ProjectId(1)).unwrap();
+            assert_eq!(after.version, 3);
+            assert_eq!(after.identity.harness.as_deref(), Some("codex"));
+            assert!(after.identity.provider.is_none());
+            assert_eq!(after.identity.local_executable, Some("/test/codex".into()));
+            assert_eq!(after.messages[0].text, "Keep this conversation");
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     fn runtime() -> AgentRuntime {
         let root =
             std::env::temp_dir().join(format!("relay-state-test-{}", installer::unique_id()));

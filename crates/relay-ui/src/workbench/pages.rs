@@ -5,68 +5,97 @@ impl Workbench {
         column().flex_1().min_h_0().child(
             column()
                 .flex_1()
+                .min_h_0()
                 .id("home-projects-scroll")
                 .overflow_y_scroll()
-                .justify_center()
-                .px(px(55.))
-                .pb(px(80.))
-                .gap(px(13.))
+                .items_center()
+                .px(px(32.))
                 .child(
-                    div()
-                        .text_size(px(31.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(self.text(Text::WelcomeBack)),
-                )
-                .child(
-                    muted(self.text(Text::HomePrompt))
-                        .text_size(px(18.))
-                        .mb(px(22.)),
-                )
-                .child(self.routing_composer(cx))
-                .when_some(self.project_error.as_ref(), |view, error| {
-                    view.child(div().text_color(rgb(0x9a542a)).child(error.clone()))
-                })
-                .child(
-                    Button::new("home-new-project")
-                        .outline()
-                        .icon(IconName::Plus)
-                        .label(self.text(Text::NewProject))
-                        .disabled(self.project_error.is_some())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.edit_project(None, window, cx)),
-                        ),
-                )
-                .children(self.projects.iter().enumerate().map(|(index, project)| {
-                    row()
-                        .id(("home-project", index))
-                        .cursor_pointer()
-                        .gap(px(20.))
-                        .p(px(22.))
-                        .rounded(px(13.))
-                        .border_1()
-                        .border_color(rgb(LINE))
-                        .hover(|this| this.bg(rgb(0xf5f5f6)))
-                        .child(icon(project_icon(index)).size(px(25.)))
+                    column()
+                        .w_full()
+                        .max_w(px(CONTENT_WIDTH))
+                        .flex_shrink_0()
+                        .my_auto()
+                        .pt(px(40.))
+                        .pb(px(96.))
+                        .gap(px(26.))
+                        .child(
+                            div()
+                                .text_center()
+                                .text_size(px(28.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(self.text(Text::HomePrompt)),
+                        )
+                        .child(self.routing_composer(cx))
+                        .when_some(self.project_error.as_ref(), |view, error| {
+                            view.child(div().text_color(rgb(0x9a542a)).child(error.clone()))
+                        })
                         .child(
                             column()
-                                .flex_1()
-                                .gap(px(6.))
+                                .gap(px(10.))
                                 .child(
-                                    div()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child(project.name.clone()),
+                                    row()
+                                        .justify_between()
+                                        .child(muted(self.text(Text::Projects)).text_size(px(12.)))
+                                        .child(
+                                            Button::new("home-new-project")
+                                                .ghost()
+                                                .small()
+                                                .icon(icon(IconName::Plus).size(px(14.)))
+                                                .label(self.text(Text::NewProject))
+                                                .text_size(px(12.))
+                                                .disabled(self.project_error.is_some())
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.edit_project(None, window, cx)
+                                                })),
+                                        ),
                                 )
-                                .child(muted(project.description.clone()).text_size(px(13.))),
-                        )
-                        .child(
-                            icon(IconName::ArrowUpRight)
-                                .size(px(18.))
-                                .text_color(rgb(MUTED)),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.navigate(Page::Project(index), window, cx)
-                        }))
-                })),
+                                .child(row().gap(px(8.)).flex_wrap().children(
+                                    self.projects.iter().enumerate().take(3).map(
+                                        |(index, project)| {
+                                            Button::new(("home-project", index))
+                                                .ghost()
+                                                .flex_1()
+                                                .min_w(px(150.))
+                                                .h(px(48.))
+                                                .px(px(14.))
+                                                .rounded(px(12.))
+                                                .border_1()
+                                                .border_color(rgb(LINE))
+                                                .accessibility_label(project.name.clone())
+                                                .when(!project.description.is_empty(), |button| {
+                                                    button.tooltip(project.description.clone())
+                                                })
+                                                .child(
+                                                    row()
+                                                        .w_full()
+                                                        .gap(px(9.))
+                                                        .child(
+                                                            icon(project_icon(index)).size(px(16.)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .min_w_0()
+                                                                .flex_1()
+                                                                .truncate()
+                                                                .text_size(px(13.))
+                                                                .child(project.name.clone()),
+                                                        ),
+                                                )
+                                                .on_click(cx.listener(
+                                                    move |this, _, window, cx| {
+                                                        this.navigate(
+                                                            Page::Project(index),
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                ))
+                                        },
+                                    ),
+                                )),
+                        ),
+                ),
         )
     }
 
@@ -76,42 +105,29 @@ impl Workbench {
                 .id("preferences-scroll")
                 .flex_1()
                 .min_h_0()
+                .w_full()
+                .max_w(px(CONTENT_WIDTH + 64.))
+                .mx_auto()
                 .overflow_y_scroll()
-                .px(px(55.))
-                .py(px(34.))
+                .px(px(32.))
+                .py(px(24.))
                 .gap(px(18.))
-                .child(
-                    div()
-                        .text_size(px(30.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .mb(px(12.))
-                        .child(self.text(Text::SettingsTitle)),
-                )
                 .child(
                     column()
                         .gap(px(14.))
-                        .p(px(22.))
-                        .rounded(px(14.))
-                        .border_1()
+                        .pb(px(20.))
+                        .border_b_1()
                         .border_color(rgb(LINE))
-                        .mb(px(10.))
                         .child(
                             row()
                                 .justify_between()
                                 .gap(px(24.))
                                 .child(
-                                    column()
-                                        .flex_1()
-                                        .gap(px(8.))
-                                        .child(
-                                            div()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(self.text(Text::Language)),
-                                        )
-                                        .child(
-                                            muted(self.text(Text::LanguageDetail))
-                                                .text_size(px(12.)),
-                                        ),
+                                    column().flex_1().gap(px(8.)).child(
+                                        div()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(self.text(Text::Language)),
+                                    ),
                                 )
                                 .child(
                                     row().gap(px(8.)).children(
@@ -122,6 +138,7 @@ impl Workbench {
                                                     self.settings_snapshot.language == language;
                                                 Button::new(language.code())
                                                     .outline()
+                                                    .small()
                                                     .label(language.native_name())
                                                     .accessibility_label(language.native_name())
                                                     .rounded(px(8.))
@@ -170,7 +187,7 @@ impl Workbench {
                 .child(Self::setting_row(
                     self.text(Text::Appearance),
                     self.text(Text::Light),
-                    self.text(Text::AppearanceDetail),
+                    "",
                 ))
                 .child(self.routing_settings(cx))
                 .child(Self::setting_row(
@@ -183,11 +200,7 @@ impl Workbench {
                     "Codex · ACP",
                     self.text(Text::AgentConnectionsDetail),
                 ))
-                .child(Self::setting_row(
-                    "Relay",
-                    env!("CARGO_PKG_VERSION"),
-                    self.text(Text::AboutDetail),
-                )),
+                .child(Self::setting_row("Relay", env!("CARGO_PKG_VERSION"), "")),
         )
     }
 
@@ -206,7 +219,9 @@ impl Workbench {
                             .font_weight(FontWeight::MEDIUM)
                             .child(title.to_owned()),
                     )
-                    .child(muted(detail).text_size(px(12.))),
+                    .when(!detail.is_empty(), |view| {
+                        view.child(muted(detail).text_size(px(12.)))
+                    }),
             )
             .child(muted(value).text_size(px(13.)))
     }

@@ -9,7 +9,7 @@ use gpui_kit::{
 };
 use relay_core::settings::Language;
 
-actions!(relay, [Quit]);
+actions!(relay, [Quit, OpenWorkspace, OpenQuick]);
 
 pub(crate) struct UiLanguage(pub Language);
 impl Global for UiLanguage {}
@@ -43,8 +43,12 @@ pub(crate) fn input_menu(menu: NativeMenu, _: &mut Window, cx: &mut App) -> Nati
 pub fn apply_language(language: Language, cx: &mut App) {
     cx.set_global(UiLanguage(language));
     gpui_kit::component::set_locale(language.code());
-    let menus =
-        vec![Menu::new("Relay").items([MenuItem::action(language.text(Text::QuitRelay), Quit)])];
+    let menus = vec![Menu::new("Relay").items([
+        MenuItem::action(language.text(Text::OpenWorkspace), OpenWorkspace),
+        MenuItem::action(language.text(Text::OpenQuick), OpenQuick),
+        MenuItem::separator(),
+        MenuItem::action(language.text(Text::QuitRelay), Quit),
+    ])];
     #[cfg(feature = "devtools")]
     let menus = {
         let mut menus = menus;

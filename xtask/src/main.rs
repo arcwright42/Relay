@@ -58,9 +58,23 @@ fn metadata() -> Result<Value> {
 fn validate_package(package: &Value) -> Result<()> {
     let name = package["name"].as_str().ok_or("Missing package name")?;
     let allowed: &[&str] = match name {
-        "relay" => &["gpui-kit", "relay-ui", "relay-core", "relay-runtime"],
+        "relay" => &[
+            "gpui-kit",
+            "relay-ui",
+            "relay-core",
+            "relay-runtime",
+            "relay-platform",
+        ],
         "relay-ui" => &["gpui-kit", "relay-core"],
         "relay-core" => &[],
+        "relay-platform" => &[
+            "relay-core",
+            "async-channel",
+            "block2",
+            "objc2",
+            "objc2-app-kit",
+            "objc2-foundation",
+        ],
         "relay-runtime" => &[
             "anyhow",
             "relay-core",
@@ -320,12 +334,13 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
             version = env!("CARGO_PKG_VERSION")
         ),
     )?;
+    let signing_identity = std::env::var("RELAY_SIGNING_IDENTITY").unwrap_or_else(|_| "-".into());
     run(
         "codesign",
         &[
             "--force",
             "--sign",
-            "-",
+            &signing_identity,
             app.to_str().ok_or("Invalid app path")?,
         ],
     )?;

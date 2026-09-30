@@ -239,7 +239,7 @@ fn digest_hex(bytes: &[u8]) -> String {
     text
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+pub(crate) fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -256,7 +256,7 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
     Ok(())
 }
 
-fn activate(staging: &Path, destination: &Path) -> Result<()> {
+pub(crate) fn activate(staging: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(
         destination
             .parent()
@@ -276,7 +276,7 @@ fn activate(staging: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run(
+pub(crate) fn run(
     command: &mut Command,
     log_directory: &Path,
     timeout: Duration,
@@ -339,9 +339,9 @@ pub(crate) fn unique_id() -> String {
         NEXT.fetch_add(1, Ordering::Relaxed)
     )
 }
-struct Staging(PathBuf);
+pub(crate) struct Staging(pub(crate) PathBuf);
 impl Staging {
-    fn new(root: &Path) -> Result<Self> {
+    pub(crate) fn new(root: &Path) -> Result<Self> {
         let path = root.join(format!(".prepare-{}", unique_id()));
         fs::create_dir(&path)?;
         Ok(Self(path))

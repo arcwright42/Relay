@@ -5870,6 +5870,7 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "relay-core",
+ "relay-platform",
  "relay-runtime",
  "relay-ui",
 ]
@@ -5889,6 +5890,18 @@ dependencies = [
 [[package]]
 name = "relay-core"
 version = "0.1.0"
+
+[[package]]
+name = "relay-platform"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "relay-core",
+]
 
 [[package]]
 name = "relay-runtime"
