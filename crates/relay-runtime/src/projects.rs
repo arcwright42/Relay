@@ -18,6 +18,15 @@ struct SavedMemory {
     name: String,
     content: String,
     source_message_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_source: Option<SavedClientSource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedClientSource {
+    pub client: String,
+    pub session_id: String,
+    pub message_id: u64,
 }
 
 fn first_memory_id() -> u64 {
@@ -81,7 +90,16 @@ impl SavedDefinition {
                     content: item.content.clone(),
                     source: item
                         .source_message_id
-                        .map(|message_id| MemorySource::Message { message_id }),
+                        .map(|message_id| MemorySource::Message { message_id })
+                        .or_else(|| {
+                            item.client_source
+                                .as_ref()
+                                .map(|s| MemorySource::ClientSession {
+                                    client: s.client.clone(),
+                                    session_id: s.session_id.clone(),
+                                    message_id: s.message_id,
+                                })
+                        }),
                 })
                 .collect(),
         }
@@ -156,6 +174,17 @@ impl SavedDefinition {
                 item.source_message_id != Some(0),
                 "Invalid memory source message."
             );
+            if let Some(source) = &item.client_source {
+                ensure!(
+                    item.source_message_id.is_none()
+                        && source.message_id > 0
+                        && !source.client.trim().is_empty()
+                        && source.client.len() <= 32
+                        && !source.session_id.trim().is_empty()
+                        && source.session_id.len() <= 128,
+                    "Invalid native client memory source."
+                );
+            }
             included += item.name.chars().count() + item.content.chars().count();
         }
         ensure!(
@@ -185,7 +214,7 @@ struct SavedCatalog {
 impl SavedCatalog {
     fn validate(&self) -> Result<()> {
         ensure!(
-            matches!(self.version, 1 | 2),
+            matches!(self.version, 1..=3),
             "Unsupported project catalog version {}. The file has been preserved.",
             self.version
         );
@@ -200,6 +229,10 @@ impl SavedCatalog {
                 "Invalid project identifier."
             );
             project.validate()?;
+            ensure!(
+                self.version >= 3 || project.memory.iter().all(|m| m.client_source.is_none()),
+                "Native memory sources require project catalog v3."
+            );
         }
         Ok(())
     }
@@ -453,9 +486,22 @@ impl ProjectStore {
                             kind: kind.code().into(),
                             name: String::new(),
                             content: String::new(),
-                            source_message_id: source.map(|source| match source {
-                                MemorySource::Message { message_id } => message_id,
-                            }),
+                            source_message_id: match &source {
+                                Some(MemorySource::Message { message_id }) => Some(*message_id),
+                                _ => None,
+                            },
+                            client_source: match source {
+                                Some(MemorySource::ClientSession {
+                                    client,
+                                    session_id,
+                                    message_id,
+                                }) => Some(SavedClientSource {
+                                    client,
+                                    session_id,
+                                    message_id,
+                                }),
+                                _ => None,
+                            },
                         });
                         project.memory.last_mut().expect("new memory")
                     };
@@ -478,9 +524,19 @@ impl ProjectStore {
                 .context("Project revision exhausted")?;
             id
         };
+        // Older clients must reject native provenance instead of silently discarding it.
+        saved.version = saved.version.max(
+            if saved
+                .projects
+                .iter()
+                .any(|p| p.memory.iter().any(|m| m.client_source.is_some()))
+            {
+                3
+            } else {
+                2
+            },
+        );
         saved.validate()?;
-        // Older Relay versions reject v2 instead of silently dropping project memory.
-        saved.version = 2;
         super::store::write_json(&self.root.join("projects.json"), &saved)?;
         let mut state = self.state.lock().expect("project catalog lock");
         state.view.projects = saved
@@ -529,6 +585,54 @@ impl ProjectService for ProjectStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_memory_source_survives_edits_restart_and_context_delivery() {
+        let root = root();
+        let store = ProjectStore::new(root.clone());
+        let source = MemorySource::ClientSession {
+            client: "codex".into(),
+            session_id: "native-session".into(),
+            message_id: 123,
+        };
+        store
+            .apply(ProjectCommand::SaveMemory {
+                project: ProjectId(1),
+                expected_revision: 1,
+                id: None,
+                kind: MemoryKind::Decision,
+                name: "Use local clients".into(),
+                content: "Keep the native harness and its configuration".into(),
+                source: Some(source.clone()),
+            })
+            .unwrap();
+        let memory = store.project(ProjectId(1)).unwrap().memory[0].clone();
+        store
+            .apply(ProjectCommand::SaveMemory {
+                project: ProjectId(1),
+                expected_revision: 2,
+                id: Some(memory.id),
+                kind: MemoryKind::Fact,
+                name: memory.name,
+                content: "Updated reviewed fact".into(),
+                source: None,
+            })
+            .unwrap();
+        drop(store);
+        let restored = ProjectStore::new(root.clone())
+            .project(ProjectId(1))
+            .unwrap();
+        assert_eq!(restored.memory[0].source, Some(source));
+        let context = crate::context::Snapshot::from_project(&restored)
+            .delivery(None)
+            .text
+            .unwrap();
+        assert!(context.contains("\"client_source\":{\"client\":\"codex\""));
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("projects.json")).unwrap()).unwrap();
+        assert_eq!(saved["version"], 3);
+        fs::remove_dir_all(root).unwrap();
+    }
     fn root() -> PathBuf {
         std::env::temp_dir().join(format!("relay-projects-{}", crate::installer::unique_id()))
     }

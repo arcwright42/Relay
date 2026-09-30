@@ -55,6 +55,7 @@ impl Workbench {
                 project,
                 item: None,
                 message: Some(Box::new(message)),
+                source: None,
             },
             window,
             cx,
@@ -73,6 +74,7 @@ impl Workbench {
                 project,
                 item,
                 message: None,
+                source: None,
             },
             window,
             cx,
@@ -108,6 +110,9 @@ impl Workbench {
                             Some(MemorySource::Message { message_id }) => {
                                 format!("{} #{message_id}", self.text(Text::MemoryFromReply))
                             }
+                            Some(MemorySource::ClientSession {
+                                client, session_id, ..
+                            }) => format!("{client} · {session_id}"),
                             None => self.text(Text::MemoryManual).into(),
                         };
                         column()

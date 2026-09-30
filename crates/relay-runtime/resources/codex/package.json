@@ -1,12 +1,8 @@
 {
-  "name": "relay-managed-codex",
+  "name": "relay-codex-adapter",
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "@agentclientprotocol/codex-acp": "1.12.0",
-    "@openai/codex": "0.154.0"
-  },
-  "overrides": {
-    "@openai/codex": "0.154.0"
+    "@agentclientprotocol/codex-acp": "1.12.0"
   }
 }

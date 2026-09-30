@@ -13,6 +13,7 @@ pub(in super::super) enum EditorMode {
         project: Project,
         item: Option<MemoryItem>,
         message: Option<Box<ChatMessage>>,
+        source: Option<MemorySource>,
     },
 }
 
@@ -159,6 +160,7 @@ impl ProjectEditor {
                 project,
                 item,
                 message,
+                source,
             } => ProjectCommand::SaveMemory {
                 project: project.id,
                 expected_revision: project.revision,
@@ -169,6 +171,7 @@ impl ProjectEditor {
                 source: item
                     .as_ref()
                     .and_then(|item| item.source.clone())
+                    .or_else(|| source.clone())
                     .or_else(|| {
                         message.as_ref().map(|message| MemorySource::Message {
                             message_id: message.id,
@@ -218,6 +221,10 @@ impl Render for ProjectEditor {
                         item: Some(item), ..
                     } => item.source.clone(),
                     EditorMode::Memory {
+                        source: Some(source),
+                        ..
+                    } => Some(source.clone()),
+                    EditorMode::Memory {
                         message: Some(message),
                         ..
                     } => Some(MemorySource::Message {
@@ -230,6 +237,9 @@ impl Render for ProjectEditor {
                         "{} #{message_id}",
                         self.language.text(Text::MemoryFromReply)
                     ),
+                    Some(MemorySource::ClientSession {
+                        client, session_id, ..
+                    }) => format!("{client} · {session_id}"),
                     None => self.language.text(Text::MemoryManual).into(),
                 };
                 view.child(

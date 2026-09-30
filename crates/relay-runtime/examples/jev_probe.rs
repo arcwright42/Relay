@@ -191,7 +191,7 @@ fn run_agent(
     expected: &[&str],
     model: Option<&str>,
 ) -> Result<(), String> {
-    runtime.dispatch(project, AgentCommand::Connect(AgentSource::Managed))?;
+    runtime.dispatch(project, AgentCommand::Connect(AgentSource::Auto))?;
     let started = Instant::now();
     let mut sent = false;
     let mut selected_model = false;

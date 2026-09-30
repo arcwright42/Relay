@@ -1,6 +1,6 @@
 [package]
 name = "relay-runtime"
-description = "Managed agent installation, project sessions, and local persistence"
+description = "Local agent connections, native client sessions, and project persistence"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -8,6 +8,7 @@ mod metrics;
 mod moli_installer;
 mod projects;
 mod routing;
+mod sessions;
 mod settings;
 mod store;
 mod webfetch;
@@ -15,6 +16,7 @@ pub use webfetch::MoliFetcher;
 
 pub use projects::ProjectStore;
 pub use routing::JevRouter;
+pub use sessions::ClientSessionStore;
 pub use settings::SettingsStore;
 
 use installer::{Installer, RELEASE};
@@ -57,7 +59,7 @@ impl ProjectState {
             version: self.storage_version.max(2),
             identity: self.stored_identity.clone(),
             local_codex: match &self.view.source {
-                AgentSource::Managed => None,
+                AgentSource::Auto => None,
                 AgentSource::Local(path) => Some(path.clone()),
             },
             cwd: Some(self.view.working_directory.clone()),
@@ -90,7 +92,7 @@ impl ProjectState {
                 harness: Some("codex".into()),
                 local_executable: match source {
                     AgentSource::Local(path) => Some(path.clone()),
-                    AgentSource::Managed => None,
+                    AgentSource::Auto => None,
                 },
                 ..Default::default()
             };
@@ -330,7 +332,7 @@ impl AgentRuntime {
 
     pub fn new(root: PathBuf, project_service: Arc<dyn ProjectService>) -> Self {
         let installer = Arc::new(Installer::new(root.clone()));
-        let installed = installer.installed();
+        let local_installations = installer::discover_local();
         let mut projects = BTreeMap::new();
         for id in project_service.snapshot().projects.iter().map(|p| p.id) {
             let loaded = store::load(&root, id);
@@ -349,9 +351,12 @@ impl AgentRuntime {
             } else {
                 None
             };
+            let installed = local_codex.as_ref().is_some_and(|p| p.is_file())
+                || !local_installations.is_empty();
             let view = AgentSnapshot {
-                source: local_codex.map_or(AgentSource::Managed, AgentSource::Local),
+                source: local_codex.map_or(AgentSource::Auto, AgentSource::Local),
                 installed,
+                local_installations: local_installations.clone(),
                 working_directory: saved.cwd.unwrap_or_else(|| {
                     root.join("projects")
                         .join(id.0.to_string())
@@ -440,7 +445,7 @@ impl AgentRuntime {
     }
 
     fn connect(&self, project: ProjectId, source: AgentSource) -> Result<(), String> {
-        let (generation, cwd, saved, preferences) = {
+        let (generation, cwd, preferences) = {
             let mut projects = self.shared.projects.lock().expect("project lock");
             let state = projects.get_mut(&project).ok_or("Unknown project")?;
             if state.storage_error {
@@ -454,9 +459,6 @@ impl AgentRuntime {
             state.generation += 1;
             state.use_codex(&source);
             state.view.source = source.clone();
-            let saved = (state.session_key.as_ref() == Some(&session_key(&state.view)))
-                .then(|| state.session_id.clone())
-                .flatten();
             state.view.status = ConnectionStatus::Preparing("Preparing Codex…".into());
             state.view.error = None;
             state.view.configs.clear();
@@ -465,7 +467,6 @@ impl AgentRuntime {
             (
                 state.generation,
                 state.view.working_directory.clone(),
-                saved,
                 state.preferences.clone(),
             )
         };
@@ -495,10 +496,19 @@ impl AgentRuntime {
                         return Ok(());
                     }
                     shared.update(project, generation, |s| {
+                        s.view.source = AgentSource::Local(prepared.executable.clone());
+                        s.use_codex(&AgentSource::Local(prepared.executable));
                         s.view.status = ConnectionStatus::Connecting;
                         s.view.installed = true;
                         s.view.runtime_version = Some(prepared.version);
                     });
+                    let saved = shared
+                        .projects
+                        .lock()
+                        .expect("project lock")
+                        .get(&project)
+                        .filter(|s| s.session_key.as_ref() == Some(&session_key(&s.view)))
+                        .and_then(|s| s.session_id.clone());
                     let callback_shared = shared.clone();
                     let handle = relay_acp::connect(
                         prepared.launch,
@@ -1011,7 +1021,7 @@ mod tests {
         assert!(cause.contains("v99"));
         assert!(cause.contains("conversation.json"));
         let rejected = runtime
-            .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Managed))
+            .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Auto))
             .unwrap_err();
         assert_eq!(cause, rejected, "connect must not mask the storage cause");
         runtime.shutdown();
@@ -1051,7 +1061,7 @@ mod tests {
                 if harness == "codex" {
                     AgentSource::Local("/test/local-agent".into())
                 } else {
-                    AgentSource::Managed
+                    AgentSource::Auto
                 }
             );
             runtime.shared.persist(ProjectId(1));
@@ -1195,7 +1205,7 @@ mod tests {
         assert!(restored.snapshot(ProjectId(1)).error.is_some());
         assert!(
             restored
-                .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Managed))
+                .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Auto))
                 .is_err()
         );
         drop(restored);

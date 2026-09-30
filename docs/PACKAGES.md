@@ -51,13 +51,13 @@ cargo xtask check-packages
 cargo xtask verify
 ```
 
-`check-packages` 读取 Cargo 的解析结果，检查允许依赖方向、精确版本、禁止 Git 分支、统一包版本和禁止发布；同时检查托管 npm 清单、override、lockfile 的一致性，每个下载包必须固定版本、来自指定 registry 并带 SHA-512 integrity。规则包含反向依赖、浮动版本和缺失校验值的回归测试。
+`check-packages` 读取 Cargo 的解析结果，检查允许依赖方向、精确版本、禁止 Git 分支、统一包版本和禁止发布；同时检查适配器 npm 清单与 lockfile 的一致性，禁止直接依赖 Codex CLI 或使用 override 固定它，每个下载包必须固定版本、来自指定 registry 并带 SHA-512 integrity。规则包含反向依赖、浮动版本和缺失校验值的回归测试。
 
 `verify` 依次执行包边界检查、格式检查、workspace 全目标全 feature Clippy（警告作为错误）与全 feature 测试。`relay-acp/test-support` 启用测试 ACP 子进程及内存命令传输，覆盖登录、模型、权限、取消、恢复去重、用量和进程退出；不会打进应用包。UI 的开发依赖额外启用 GPUI Kit 的 `test-support`，用真实鼠标/键盘事件覆盖项目与资料表单、资料选择，以及 Inspector 关闭与普通点击恢复。测试不需要网络、真实账号或模型费用。GitHub Actions 的 macOS 工作流运行同一条命令；CI 依赖的 Actions 固定到提交 SHA。
 
 ## 外部运行组件
 
-当前兼容组合为 Rust ACP SDK 2.2.0、ACP 协议 v1、codex-acp 1.12.0、Codex 0.154.0、Node 24.21.0。应用内嵌托管安装清单和 npm lockfile，按需下载到 Relay 的 Application Support 目录。Node 的 Apple Silicon / Intel 官方归档分别固定 SHA-256；npm 使用 `ci --ignore-scripts` 和仓库内 lockfile，不运行 `npx ...@latest`，不使用用户的全局 npm 安装位置。
+当前兼容组合为 Rust ACP SDK 2.2.0、ACP 协议 v1、codex-acp 1.12.0、用户本地 Codex、Node 24.21.0。应用内嵌协议适配器清单和 npm lockfile，按需下载到 Relay 的 Application Support 目录。Node 的 Apple Silicon / Intel 官方归档分别固定 SHA-256；npm 使用 `ci --ignore-scripts --omit=optional` 和仓库内 lockfile，不运行 `npx ...@latest`，不使用用户的全局 npm 安装位置。
 
 组件先安装到临时目录，校验版本后再激活；失败保留当前版本，替换失败恢复原目录。旧版本目录保留，尚无用户可操作的升级/回滚界面。选择本地 Codex 时，只有 Codex 可执行文件来自用户指定路径，适配器和 Node 仍由 Relay 管理。升级须同步清单、lockfile、Rust 中的版本标识、校验值及真实连接验证记录。详见 [Codex 接入](CODEX.md)。
 
@@ -75,3 +75,5 @@ open dist/Relay.app
 图标以 `assets/relay-icon.svg` 为应用图标源文件，`assets/relay-mark.svg` 用于单色界面标志。`icon` 使用 macOS 系统工具生成 PNG 和 ICNS；调整矢量稿后重新生成并提交这些资源。
 
 `bundle` 默认使用开发构建，`bundle --release` 使用发布优化，均生成 `dist/Relay.app` 并做本地 ad hoc 签名。可执行文件通过临时文件和 rename 替换，避免覆盖正在运行进程所映射的文件；已打开的窗口继续使用旧构建，新构建下次启动生效。对外分发所需的开发者签名、notarization 和更新机制尚未接入。构建产物、编辑器配置与日志不进入 Git。
+
+本地 Client 会话归档属于 relay-runtime，UI 通过 relay-core::sessions 的修订快照和命令访问。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [本地会话中心](CLIENT-SESSIONS.md)。

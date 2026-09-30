@@ -854,6 +854,137 @@ impl AgentService for ReplyAgents {
     }
 }
 
+struct LocalSessionFixture {
+    state: Mutex<relay_core::sessions::ClientSessionsSnapshot>,
+    revision: std::sync::atomic::AtomicU64,
+}
+
+impl LocalSessionFixture {
+    fn new() -> Self {
+        use relay_core::sessions::*;
+        let session = ClientSession {
+            id: ClientSessionId("codex:outside-relay".into()),
+            client: "codex".into(),
+            native_id: "outside-relay".into(),
+            title: "Native client decision".into(),
+            working_directory: "/workspace/native".into(),
+            source: "/native/sessions/session.jsonl".into(),
+            project: None,
+            updated_at: "2026-09-30".into(),
+            message_count: 1,
+            available: true,
+        };
+        Self {
+            state: Mutex::new(ClientSessionsSnapshot {
+                sessions: vec![session],
+                ..Default::default()
+            }),
+            revision: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
+impl relay_core::sessions::ClientSessionsService for LocalSessionFixture {
+    fn revision(&self) -> u64 {
+        self.revision.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn snapshot(&self) -> relay_core::sessions::ClientSessionsSnapshot {
+        self.state.lock().unwrap().clone()
+    }
+    fn dispatch(&self, command: relay_core::sessions::ClientSessionsCommand) -> Result<(), String> {
+        use relay_core::sessions::*;
+        let mut state = self.state.lock().unwrap();
+        match command {
+            ClientSessionsCommand::Open(id) => {
+                state.selected = Some(id);
+                state.detail = Some(ClientSessionDetail {
+                    session: state.sessions[0].clone(),
+                    messages: Arc::new(vec![ClientMessage {
+                        id: 99,
+                        role: MessageRole::Assistant,
+                        text: "## Local decision\nReuse the user's own client".into(),
+                    }]),
+                });
+            }
+            ClientSessionsCommand::Assign { project, .. } => {
+                state.sessions[0].project = project;
+                state.detail.as_mut().unwrap().session.project = project;
+            }
+            ClientSessionsCommand::Sync => {}
+        }
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+fn native_session_assignment_and_review_save_memory_to_its_project(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let projects = Arc::new(TestProjects::default());
+    let agents = Arc::new(ReadyAgents::default());
+    let sessions = Arc::new(LocalSessionFixture::new());
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = Workbench::new(
+                agents.clone(),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                Arc::new(TestRouting),
+                window,
+                cx,
+            );
+            view.set_client_session_service(sessions, cx);
+            view.navigate(Page::Sessions, window, cx);
+            view
+        });
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("client-session-codex:outside-relay", cx);
+        window.render_frame(cx);
+        window.click(("remember-client-message", 99_u64), cx);
+        assert!(window.try_find("save-project-edit").is_none());
+        window.click("assign-client-session", cx);
+        window.click(("client-session-project", 2_u64), cx);
+        window.render_frame(cx);
+        window.click(("remember-client-message", 99_u64), cx);
+        assert!(
+            projects
+                .snapshot()
+                .projects
+                .iter()
+                .all(|p| p.memory.is_empty())
+        );
+        window.click("memory-kind-decision", cx);
+        window.click("save-project-edit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let catalog = projects.snapshot();
+    assert!(catalog.projects[0].memory.is_empty());
+    let memory = &catalog.projects[1].memory[0];
+    assert_eq!(memory.kind, MemoryKind::Decision);
+    assert_eq!(
+        memory.content,
+        "## Local decision\nReuse the user's own client"
+    );
+    assert_eq!(
+        memory.source,
+        Some(MemorySource::ClientSession {
+            client: "codex".into(),
+            session_id: "outside-relay".into(),
+            message_id: 99
+        })
+    );
+    assert!(agents.0.lock().unwrap().is_empty());
+}
+
 #[gpui_kit::test]
 fn saving_a_completed_reply_requires_review_and_preserves_its_source(cx: &mut TestAppContext) {
     use gpui_kit::{component::Root, test::TestWindowExt};
