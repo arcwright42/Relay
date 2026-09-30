@@ -7,7 +7,9 @@ pub mod projects;
 pub mod routing;
 pub mod settings;
 
-pub use projects::{ContextId, ContextItem, Project};
+pub use projects::{
+    ContextId, ContextItem, MemoryId, MemoryItem, MemoryKind, MemorySource, Project,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProjectId(pub u64);

@@ -141,6 +141,7 @@ impl Default for TestProjects {
                     description: String::new(),
                     instructions: "Keep my instructions unchanged".into(),
                     context: vec![],
+                    memory: vec![],
                 })
                 .collect(),
         }))
@@ -170,6 +171,7 @@ impl ProjectService for TestProjects {
                     description: draft.description,
                     instructions: draft.instructions,
                     context: vec![],
+                    memory: vec![],
                 });
                 id
             }
@@ -190,6 +192,62 @@ impl ProjectService for TestProjects {
                     content,
                     included,
                 });
+                current.revision += 1;
+                project
+            }
+            ProjectCommand::SaveMemory {
+                project,
+                expected_revision,
+                id,
+                kind,
+                name,
+                content,
+                source,
+            } => {
+                let current = state.projects.iter_mut().find(|p| p.id == project).unwrap();
+                if current.revision != expected_revision {
+                    return Err("Project changed".into());
+                }
+                if let Some(id) = id {
+                    let item = current
+                        .memory
+                        .iter_mut()
+                        .find(|item| item.id == id)
+                        .unwrap();
+                    item.kind = kind;
+                    item.name = name;
+                    item.content = content;
+                } else {
+                    let id = MemoryId(
+                        current
+                            .memory
+                            .iter()
+                            .map(|item| item.id.0)
+                            .max()
+                            .unwrap_or(0)
+                            + 1,
+                    );
+                    current.memory.push(MemoryItem {
+                        id,
+                        kind,
+                        name,
+                        content,
+                        source,
+                    });
+                }
+                current.revision += 1;
+                project
+            }
+            ProjectCommand::RemoveMemory {
+                project,
+                expected_revision,
+                id,
+            } => {
+                let current = state.projects.iter_mut().find(|p| p.id == project).unwrap();
+                if current.revision != expected_revision {
+                    return Err("Project changed".into());
+                }
+                current.memory.retain(|item| item.id != id);
                 current.revision += 1;
                 project
             }
@@ -680,6 +738,171 @@ fn project_and_note_forms_save_through_real_pointer_and_keyboard_events(cx: &mut
 }
 
 #[gpui_kit::test]
+fn project_memory_can_be_added_edited_and_removed_without_calling_the_agent(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        // Dialog entrance motion uses wall time; test clicks on the settled layout.
+        cx.set_reduce_motion(true);
+    });
+    let projects = Arc::new(TestProjects::default());
+    let agents = Arc::new(ReadyAgents::default());
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            Workbench::new(
+                agents.clone(),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                Arc::new(TestRouting),
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| view.navigate(Page::Project(0), window, cx));
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("project-memory", cx);
+        window.click("add-project-memory", cx);
+        window.click("memory-kind-decision", cx);
+        window.click("project-editor-name", cx);
+    })
+    .unwrap();
+    cx.simulate_input(window.into(), "Storage choice");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click("project-editor-body", cx)
+    })
+    .unwrap();
+    cx.simulate_input(window.into(), "Use the existing local project store");
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click("save-project-edit", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    {
+        let catalog = projects.snapshot();
+        let memory = &catalog.projects[0].memory[0];
+        assert_eq!(memory.name, "Storage choice");
+        assert_eq!(memory.content, "Use the existing local project store");
+        assert_eq!(memory.kind, MemoryKind::Decision);
+        assert!(memory.source.is_none());
+        assert!(catalog.projects[1..].iter().all(|p| p.memory.is_empty()));
+    }
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("save-project-edit").is_none());
+        window.click(("edit-memory", 1_u64), cx);
+        window.click("memory-kind-fact", cx);
+        window.click("save-project-edit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        projects.snapshot().projects[0].revision,
+        3,
+        "The edit must be saved"
+    );
+    assert_eq!(
+        projects.snapshot().projects[0].memory[0].kind,
+        MemoryKind::Fact
+    );
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("remove-memory", 1_u64), cx);
+        window.click("confirm-remove-memory", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(projects.snapshot().projects[0].memory.is_empty());
+    assert!(agents.0.lock().unwrap().is_empty());
+}
+
+struct ReplyAgents;
+impl AgentService for ReplyAgents {
+    fn revision(&self) -> u64 {
+        1
+    }
+    fn snapshot(&self, _: ProjectId) -> AgentSnapshot {
+        AgentSnapshot {
+            status: ConnectionStatus::Ready,
+            messages: vec![
+                ChatMessage {
+                    id: 12,
+                    role: MessageRole::Assistant,
+                    text: "## Chosen design\nShare memory through ACP context".into(),
+                    status: MessageStatus::Complete,
+                    tools: vec![],
+                    metrics: None,
+                },
+                ChatMessage {
+                    id: 13,
+                    role: MessageRole::Assistant,
+                    text: "Unfinished answer".into(),
+                    status: MessageStatus::Interrupted,
+                    tools: vec![],
+                    metrics: None,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+    fn dispatch(&self, _: ProjectId, _: AgentCommand) -> Result<(), String> {
+        panic!("Saving a memory must not dispatch an agent command")
+    }
+}
+
+#[gpui_kit::test]
+fn saving_a_completed_reply_requires_review_and_preserves_its_source(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let projects = Arc::new(TestProjects::default());
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            Workbench::new(
+                Arc::new(ReplyAgents),
+                Arc::new(TestSettings::default()),
+                projects.clone(),
+                Arc::new(TestRouting),
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| view.navigate(Page::Project(0), window, cx));
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("remember-reply", 13_u64)).is_none());
+        window.click(("remember-reply", 12_u64), cx);
+        assert!(window.try_find("save-project-edit").is_some());
+        assert!(projects.snapshot().projects[0].memory.is_empty());
+        window.click("memory-kind-decision", cx);
+        window.click("save-project-edit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let catalog = projects.snapshot();
+    let memory = &catalog.projects[0].memory[0];
+    assert_eq!(memory.name, "Chosen design");
+    assert_eq!(
+        memory.content,
+        "## Chosen design\nShare memory through ACP context"
+    );
+    assert_eq!(memory.kind, MemoryKind::Decision);
+    assert_eq!(
+        memory.source,
+        Some(MemorySource::Message { message_id: 12 })
+    );
+    assert!(catalog.projects[1..].iter().all(|p| p.memory.is_empty()));
+}
+
+#[gpui_kit::test]
 fn new_projects_appear_without_resetting_other_drafts_and_empty_catalog_is_renderable(
     cx: &mut TestAppContext,
 ) {
@@ -710,6 +933,7 @@ fn new_projects_appear_without_resetting_other_drafts_and_empty_catalog_is_rende
                     description: String::new(),
                     instructions: String::new(),
                     context: vec![],
+                    memory: vec![],
                 });
                 state.revision += 1;
             }

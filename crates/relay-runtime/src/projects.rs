@@ -12,6 +12,19 @@ struct SavedItem {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct SavedMemory {
+    id: u64,
+    kind: String,
+    name: String,
+    content: String,
+    source_message_id: Option<u64>,
+}
+
+fn first_memory_id() -> u64 {
+    1
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct SavedDefinition {
     id: u64,
     revision: u64,
@@ -20,6 +33,10 @@ struct SavedDefinition {
     instructions: String,
     next_context_id: u64,
     context: Vec<SavedItem>,
+    #[serde(default = "first_memory_id")]
+    next_memory_id: u64,
+    #[serde(default)]
+    memory: Vec<SavedMemory>,
 }
 
 impl SavedDefinition {
@@ -32,6 +49,8 @@ impl SavedDefinition {
             instructions: draft.instructions,
             next_context_id: 1,
             context: vec![],
+            next_memory_id: 1,
+            memory: vec![],
         }
     }
 
@@ -50,6 +69,19 @@ impl SavedDefinition {
                     name: item.name.clone(),
                     content: item.content.clone(),
                     included: item.included,
+                })
+                .collect(),
+            memory: self
+                .memory
+                .iter()
+                .map(|item| MemoryItem {
+                    id: MemoryId(item.id),
+                    kind: MemoryKind::from_code(&item.kind).expect("validated memory kind"),
+                    name: item.name.clone(),
+                    content: item.content.clone(),
+                    source: item
+                        .source_message_id
+                        .map(|message_id| MemorySource::Message { message_id }),
                 })
                 .collect(),
         }
@@ -97,8 +129,38 @@ impl SavedDefinition {
         }
         ensure!(self.next_context_id > 0, "Invalid next context identifier.");
         ensure!(
+            self.memory.len() <= MAX_MEMORY_ITEMS,
+            "A project can contain up to {MAX_MEMORY_ITEMS} memories."
+        );
+        ensure!(self.next_memory_id > 0, "Invalid next memory identifier.");
+        let mut memory_ids = BTreeSet::new();
+        for item in &self.memory {
+            ensure!(
+                item.id > 0 && item.id < self.next_memory_id && memory_ids.insert(item.id),
+                "Invalid memory identifier."
+            );
+            ensure!(
+                MemoryKind::from_code(&item.kind).is_some(),
+                "Unknown memory kind."
+            );
+            validate_name(&item.name)?;
+            ensure!(
+                !item.content.trim().is_empty(),
+                "Memory content cannot be empty."
+            );
+            ensure!(
+                item.content.chars().count() <= MAX_MEMORY_CHARS,
+                "Each memory is limited to {MAX_MEMORY_CHARS} characters."
+            );
+            ensure!(
+                item.source_message_id != Some(0),
+                "Invalid memory source message."
+            );
+            included += item.name.chars().count() + item.content.chars().count();
+        }
+        ensure!(
             included <= MAX_SELECTED_CONTEXT_CHARS,
-            "Selected context is limited to {MAX_SELECTED_CONTEXT_CHARS} characters. Deselect some notes before adding more."
+            "Selected context and project memory are limited to {MAX_SELECTED_CONTEXT_CHARS} characters. Reduce memory or deselect some notes before adding more."
         );
         Ok(())
     }
@@ -123,7 +185,7 @@ struct SavedCatalog {
 impl SavedCatalog {
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1,
+            matches!(self.version, 1 | 2),
             "Unsupported project catalog version {}. The file has been preserved.",
             self.version
         );
@@ -241,7 +303,7 @@ impl ProjectStore {
                 .context("Project identifier exhausted")?;
         }
         let saved = SavedCatalog {
-            version: 1,
+            version: 2,
             next_project_id: next_id,
             projects,
         };
@@ -302,6 +364,16 @@ impl ProjectStore {
                     project,
                     expected_revision,
                     ..
+                }
+                | ProjectCommand::SaveMemory {
+                    project,
+                    expected_revision,
+                    ..
+                }
+                | ProjectCommand::RemoveMemory {
+                    project,
+                    expected_revision,
+                    ..
                 } => (*project, *expected_revision),
                 ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
                     unreachable!()
@@ -358,6 +430,44 @@ impl ProjectStore {
                         bail!("Unknown note");
                     }
                 }
+                ProjectCommand::SaveMemory {
+                    id,
+                    kind,
+                    name,
+                    content,
+                    source,
+                    ..
+                } => {
+                    let item = if let Some(id) = id {
+                        project
+                            .memory
+                            .iter_mut()
+                            .find(|item| item.id == id.0)
+                            .context("Unknown memory")?
+                    } else {
+                        let id = project.next_memory_id;
+                        project.next_memory_id =
+                            id.checked_add(1).context("Memory identifier exhausted")?;
+                        project.memory.push(SavedMemory {
+                            id,
+                            kind: kind.code().into(),
+                            name: String::new(),
+                            content: String::new(),
+                            source_message_id: source.map(|source| match source {
+                                MemorySource::Message { message_id } => message_id,
+                            }),
+                        });
+                        project.memory.last_mut().expect("new memory")
+                    };
+                    item.kind = kind.code().into();
+                    item.name = name.trim().into();
+                    item.content = content;
+                }
+                ProjectCommand::RemoveMemory { id, .. } => {
+                    let length = project.memory.len();
+                    project.memory.retain(|item| item.id != id.0);
+                    ensure!(length != project.memory.len(), "Unknown memory");
+                }
                 ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
                     unreachable!()
                 }
@@ -369,6 +479,8 @@ impl ProjectStore {
             id
         };
         saved.validate()?;
+        // Older Relay versions reject v2 instead of silently dropping project memory.
+        saved.version = 2;
         super::store::write_json(&self.root.join("projects.json"), &saved)?;
         let mut state = self.state.lock().expect("project catalog lock");
         state.view.projects = saved
@@ -582,6 +694,156 @@ mod tests {
             .unwrap();
         add(&store, id, 5, true, "Replacement".into()).unwrap();
         assert!(store.project(id).unwrap().context.last().unwrap().id > first);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_memory_is_durable_isolated_and_keeps_its_source_on_edit() {
+        let root = root();
+        let store = ProjectStore::new(root.clone());
+        let other = store
+            .apply(ProjectCommand::Create(ProjectDraft {
+                name: "Another project".into(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let save = |revision, id, content: &str, source| ProjectCommand::SaveMemory {
+            project: ProjectId(1),
+            expected_revision: revision,
+            id,
+            kind: MemoryKind::Decision,
+            name: "Storage decision".into(),
+            content: content.into(),
+            source,
+        };
+        let source = Some(MemorySource::Message { message_id: 12 });
+        store
+            .apply(save(1, None, "Use local JSON", source.clone()))
+            .unwrap();
+        let memory = store.project(ProjectId(1)).unwrap().memory[0].clone();
+        assert!(store.project(other).unwrap().memory.is_empty());
+        assert!(
+            store
+                .apply(save(1, Some(memory.id), "Stale edit", None))
+                .is_err()
+        );
+        store
+            .apply(save(2, Some(memory.id), "Use versioned local JSON", None))
+            .unwrap();
+        let expected = store.project(ProjectId(1)).unwrap();
+        assert_eq!(expected.memory[0].source, source);
+        drop(store);
+        let restored = ProjectStore::new(root.clone());
+        assert_eq!(restored.project(ProjectId(1)), Some(expected));
+        restored
+            .apply(ProjectCommand::RemoveMemory {
+                project: ProjectId(1),
+                expected_revision: 3,
+                id: memory.id,
+            })
+            .unwrap();
+        restored
+            .apply(save(4, None, "Replacement decision", None))
+            .unwrap();
+        assert!(restored.project(ProjectId(1)).unwrap().memory[0].id > memory.id);
+        assert!(restored.project(other).unwrap().memory.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_catalog_loads_unchanged_and_upgrades_only_when_memory_is_saved() {
+        let root = root();
+        drop(ProjectStore::new(root.clone()));
+        let path = root.join("projects.json");
+        let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        old["version"] = 1.into();
+        for project in old["projects"].as_array_mut().unwrap() {
+            project.as_object_mut().unwrap().remove("memory");
+            project.as_object_mut().unwrap().remove("next_memory_id");
+        }
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let store = ProjectStore::new(root.clone());
+        assert!(store.project(ProjectId(1)).unwrap().memory.is_empty());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        store
+            .apply(ProjectCommand::SaveMemory {
+                project: ProjectId(1),
+                expected_revision: 1,
+                id: None,
+                kind: MemoryKind::Fact,
+                name: "Project fact".into(),
+                content: "Memory lives in the project".into(),
+                source: None,
+            })
+            .unwrap();
+        let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(current["version"], 2);
+        assert_eq!(current["projects"][0]["memory"][0]["id"], 1);
+        // An unrecognized memory kind cannot be silently discarded on the next write.
+        let mut corrupt = current;
+        corrupt["projects"][0]["memory"][0]["kind"] = "future_kind".into();
+        let bytes = serde_json::to_vec(&corrupt).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let unreadable = ProjectStore::new(root.clone());
+        assert!(unreadable.snapshot().error.is_some());
+        assert!(
+            unreadable
+                .apply(ProjectCommand::Create(ProjectDraft {
+                    name: "Must not overwrite".into(),
+                    ..Default::default()
+                }))
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn memory_limits_and_failed_writes_do_not_publish_or_truncate_content() {
+        let root = root();
+        let store = ProjectStore::new(root.clone());
+        let save = |content: String| ProjectCommand::SaveMemory {
+            project: ProjectId(1),
+            expected_revision: 1,
+            id: None,
+            kind: MemoryKind::Fact,
+            name: "Unicode fact".into(),
+            content,
+            source: None,
+        };
+        assert!(
+            store
+                .apply(save("中".repeat(MAX_MEMORY_CHARS + 1)))
+                .is_err()
+        );
+        assert_eq!(store.project(ProjectId(1)).unwrap().revision, 1);
+        store.apply(save("中".repeat(MAX_MEMORY_CHARS))).unwrap();
+        assert_eq!(
+            store.project(ProjectId(1)).unwrap().memory[0]
+                .content
+                .chars()
+                .count(),
+            MAX_MEMORY_CHARS
+        );
+        add(&store, ProjectId(1), 2, true, "a".repeat(MAX_ITEM_CHARS)).unwrap();
+        add(&store, ProjectId(1), 3, true, "b".repeat(MAX_ITEM_CHARS)).unwrap();
+        let initial = store.project(ProjectId(1)).unwrap();
+        // Selected notes and memory share a budget; neither is silently deselected.
+        assert!(add(&store, ProjectId(1), 4, true, "c".repeat(4_000)).is_err());
+        assert_eq!(store.project(initial.id), Some(initial.clone()));
+        fs::rename(root.join("projects.json"), root.join("original.json")).unwrap();
+        fs::create_dir(root.join("projects.json")).unwrap();
+        assert!(
+            store
+                .apply(ProjectCommand::RemoveMemory {
+                    project: initial.id,
+                    expected_revision: initial.revision,
+                    id: initial.memory[0].id,
+                })
+                .is_err()
+        );
+        assert_eq!(store.project(initial.id), Some(initial));
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,6 +1,7 @@
 mod agents;
 mod conversation;
 mod diagnostics;
+mod memory;
 mod navigation;
 mod pages;
 mod projects;

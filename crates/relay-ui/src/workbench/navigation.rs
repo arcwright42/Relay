@@ -219,6 +219,21 @@ impl Workbench {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_context(window, cx);
                                 })),
+                        )
+                        .child(
+                            icon_button(
+                                "project-memory",
+                                IconName::FileText,
+                                self.text(Text::ProjectMemory),
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    if let Some(project) = this.projects.get(this.selected_project)
+                                    {
+                                        this.show_project_memory(project.id, window, cx);
+                                    }
+                                },
+                            )),
                         ),
                 )
             })

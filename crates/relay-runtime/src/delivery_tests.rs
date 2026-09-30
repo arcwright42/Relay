@@ -1,5 +1,5 @@
 use super::*;
-use relay_core::projects::{ProjectCommand, ProjectDraft};
+use relay_core::projects::{MemoryKind, MemorySource, ProjectCommand, ProjectDraft};
 
 struct Fixture {
     runtime: AgentRuntime,
@@ -27,6 +27,20 @@ impl Fixture {
                 name: "Reference".into(),
                 content: content.into(),
                 included: true,
+            })
+            .unwrap();
+    }
+    fn memory(&self, content: &str) {
+        let project = self.projects.project(ProjectId(1)).unwrap();
+        self.projects
+            .apply(ProjectCommand::SaveMemory {
+                project: project.id,
+                expected_revision: project.revision,
+                id: project.memory.first().map(|item| item.id),
+                kind: MemoryKind::Decision,
+                name: "Chosen architecture".into(),
+                content: content.into(),
+                source: Some(MemorySource::Message { message_id: 12 }),
             })
             .unwrap();
     }
@@ -80,6 +94,80 @@ macro_rules! prompt {
             std::thread::sleep(Duration::from_millis(5));
         }
     }};
+}
+
+#[test]
+fn memory_updates_removals_and_unconfirmed_changes_reach_the_next_acp_turn() {
+    let fixture = Fixture::new();
+    fixture.memory("Use the existing project store");
+    let (connection, received) = relay_acp::test_connection();
+    fixture
+        .runtime
+        .connections
+        .lock()
+        .unwrap()
+        .insert(ProjectId(1), connection);
+    fixture.ready(false);
+    let initial = prompt!(fixture.runtime, received, "First").unwrap();
+    assert!(initial.contains("\"kind\":\"snapshot\""));
+    assert!(initial.contains("Use the existing project store"));
+    assert!(initial.contains("\"source_message_id\":12"));
+    fixture.finish(TurnOutcome::Complete);
+    assert!(prompt!(fixture.runtime, received, "Unchanged").is_none());
+    fixture.finish(TurnOutcome::Complete);
+
+    fixture.memory("Share memory through ACP context");
+    let changed = prompt!(fixture.runtime, received, "Updated").unwrap();
+    assert!(changed.contains("\"kind\":\"delta\""));
+    assert!(changed.contains("\"upsert_memories\""));
+    assert!(changed.contains("Share memory through ACP context"));
+    assert!(!changed.contains("Use the existing project store"));
+    fixture.finish(TurnOutcome::Cancelled);
+    let retried = prompt!(fixture.runtime, received, "Continue").unwrap();
+    assert!(retried.contains("\"kind\":\"snapshot\""));
+    assert!(retried.contains("Share memory through ACP context"));
+    fixture.finish(TurnOutcome::Complete);
+
+    let project = fixture.projects.project(ProjectId(1)).unwrap();
+    let id = project.memory[0].id;
+    fixture
+        .projects
+        .apply(ProjectCommand::RemoveMemory {
+            project: project.id,
+            expected_revision: project.revision,
+            id,
+        })
+        .unwrap();
+    let removed = prompt!(fixture.runtime, received, "After removal").unwrap();
+    assert!(removed.contains(&format!("\"remove_memory_ids\":[{}]", id.0)));
+    assert!(!removed.contains("Share memory through ACP context"));
+    fixture.finish(TurnOutcome::Complete);
+
+    fixture.memory("Memory survives a new native session");
+    fixture.ready(false);
+    let new_session = prompt!(fixture.runtime, received, "New session").unwrap();
+    assert!(new_session.contains("\"kind\":\"snapshot\""));
+    assert!(new_session.contains("Memory survives a new native session"));
+    fixture.finish(TurnOutcome::Complete);
+    fixture.runtime.shutdown();
+    let restored = AgentRuntime::new(fixture.root.clone(), fixture.projects.clone());
+    let (connection, received) = relay_acp::test_connection();
+    restored
+        .connections
+        .lock()
+        .unwrap()
+        .insert(ProjectId(1), connection);
+    restored.shared.event(
+        ProjectId(1),
+        0,
+        Event::Ready {
+            session_id: "test-session".into(),
+            configs: vec![],
+            resumed: true,
+        },
+    );
+    assert!(prompt!(restored, received, "After restart").is_none());
+    restored.shutdown();
 }
 
 #[test]
