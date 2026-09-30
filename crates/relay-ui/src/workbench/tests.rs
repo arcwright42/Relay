@@ -222,6 +222,7 @@ struct DecidingRouter {
     decision: Result<RouteDecision, RoutingError>,
     calls: Mutex<Vec<String>>,
     key: Mutex<Option<(RoutingProvider, String)>>,
+    credential_source: RoutingCredentialSource,
 }
 impl DecidingRouter {
     fn new(target: Option<RouteTarget>) -> Self {
@@ -239,6 +240,7 @@ impl DecidingRouter {
             }),
             calls: Mutex::default(),
             key: Mutex::default(),
+            credential_source: RoutingCredentialSource::Keychain,
         }
     }
 }
@@ -251,6 +253,7 @@ impl RoutingService for DecidingRouter {
                 .map(|(provider, _)| *provider)
                 .unwrap_or_default(),
             configured: key.is_some(),
+            credential_source: key.as_ref().map(|_| self.credential_source),
             error: None,
         }
     }
@@ -379,6 +382,7 @@ fn uncertain_or_failed_routing_preserves_input_and_never_executes(cx: &mut TestA
             decision: result,
             calls: Mutex::default(),
             key: Mutex::default(),
+            credential_source: RoutingCredentialSource::Keychain,
         });
         let window = cx.add_window(|window, cx| {
             Workbench::new(
@@ -511,7 +515,7 @@ fn jev_settings_save_and_remove_masked_key_without_retaining_input(cx: &mut Test
     .unwrap();
     assert_eq!(
         router.snapshot().provider,
-        RoutingProvider::Vercel,
+        RoutingProvider::OpenRouter,
         "Selecting alone does not change the saved channel"
     );
     cx.simulate_input(window.into(), "different-provider-test-key");
@@ -528,6 +532,71 @@ fn jev_settings_save_and_remove_masked_key_without_retaining_input(cx: &mut Test
     .unwrap();
     cx.run_until_parked();
     assert!(!router.snapshot().configured);
+}
+
+#[gpui_kit::test]
+fn environment_jev_credentials_cannot_be_replaced_removed_or_switched_in_settings(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(gpui_kit::init);
+    for source in [
+        RoutingCredentialSource::Environment,
+        RoutingCredentialSource::EnvFile,
+    ] {
+        let router = Arc::new(DecidingRouter {
+            key: Mutex::new(Some((
+                RoutingProvider::OpenRouter,
+                "externally-managed-key".into(),
+            ))),
+            credential_source: source,
+            ..DecidingRouter::new(None)
+        });
+        let view_cell = std::cell::RefCell::new(None);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Workbench::new(
+                    Arc::new(ReadyAgents::default()),
+                    Arc::new(TestSettings::default()),
+                    Arc::new(TestProjects::default()),
+                    router.clone(),
+                    window,
+                    cx,
+                )
+            });
+            view.update(cx, |view, cx| {
+                view.navigate(Page::Settings, window, cx);
+                // Even a nonempty draft cannot enable saving over an external credential.
+                view.routing
+                    .key
+                    .update(cx, |key, cx| key.set_value("replacement-key", window, cx));
+            });
+            *view_cell.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("typesafe", cx);
+            window.click("save-jev-key", cx);
+            window.click("remove-jev-key", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(router.snapshot().credential_source, Some(source));
+        assert_eq!(
+            *router.key.lock().unwrap(),
+            Some((RoutingProvider::OpenRouter, "externally-managed-key".into()))
+        );
+        cx.update(|cx| {
+            view_cell.borrow().as_ref().unwrap().update(cx, |view, cx| {
+                assert_eq!(
+                    view.routing.key.read(cx).value().as_ref(),
+                    "replacement-key"
+                );
+                assert!(!view.routing.saving_key);
+            })
+        });
+    }
 }
 
 #[gpui_kit::test]

@@ -41,7 +41,7 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 
 点击左侧 **项目 +** 创建项目，标题右上方齿轮编辑项目指令；输入框 **添加上下文** 管理文字资料。只有选用的资料会随下一条消息发送，修改不会影响正在执行的轮次。每份资料最多 12,000 字，选用上下文合计最多 32,000 字，超限时明确提示。
 
-**设置 → Jev** 支持 Vercel AI Gateway 和 TypeSafe 两个渠道。保存对应 API key 后，可在首页直接输入需求，由 Jev 分配项目；使用 Vercel 无需另有 TypeSafe 密钥。密钥保存在 macOS 钥匙串中；请求包含本次输入、项目名称/说明片段和少量近期用户提问。缺少密钥或免费额度不可用时仍能手动选择项目。试用条件与接口详见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
+**设置 → 项目自动归属** 支持 OpenRouter、Vercel AI Gateway 和 TypeSafe 三个渠道，默认选择 OpenRouter。可在工作目录 `.env` 中配置 `OPENROUTER_API_KEY`，或在设置中保存对应渠道的 API key。环境配置优先，设置中保存的密钥使用 macOS 钥匙串。请求包含本次输入、项目名称/说明片段和少量近期用户提问。缺少密钥或额度不足时仍能手动选择项目。接口与完整流程详见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
 
 打开项目输入框的 **Codex** 菜单，选择 **安装并连接 Codex / 连接 Codex**（英文界面为 **Set up Codex / Connect Codex**）。已有 Codex 登录通常可直接复用；否则按返回的登录方式完成认证。连接后选择模型并发送消息。**智能体 / Agents** 页面管理安装来源与项目工作目录。详见 [Codex 接入](docs/CODEX.md)。
 
@@ -53,12 +53,26 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 
 环境：macOS 15+、完整 Xcode（含 Metal 编译器）、Rust 1.97.1。Rust 版本由 `rust-toolchain.toml` 固定，依赖由 `Cargo.lock` 固定。
 
+开发时先复制 `.env.example` 为 `.env`，填写自己的 OpenRouter API key：
+
+```sh
+cp .env.example .env
+```
+
+```dotenv
+OPENROUTER_API_KEY=你的_OpenRouter_API_key
+```
+
+Relay 启动时自动读取当前工作目录的 `.env`，该文件已被 Git 忽略。配置优先级为进程环境变量 → `.env` → 钥匙串；环境密钥不写入钥匙串或项目文件，也不会由 `.env` 加载器注入 Agent 子进程环境。修改环境配置后重启 Relay。通过 Finder 启动的应用通常没有终端环境或仓库工作目录，可直接在 **设置 → 项目自动归属 → OpenRouter** 保存密钥。
+
 ```sh
 cargo run --locked
 cargo xtask verify
 cargo xtask bundle
 open dist/Relay.app
 ```
+
+真实 Jev 联调使用隔离的临时项目，可运行 `cargo run -p relay-runtime --example jev_probe --locked`；添加 `-- --execute --model gpt-5.5` 可进一步验证已安装 Codex 的项目上下文交付。详细结果和账号模型限制见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
 
 `cargo xtask bundle --release` 生成发布优化的本地应用包。开发检查器由 `devtools` feature 控制；无开发工具的构建可使用 `cargo build -p relay --release --no-default-features --locked`。
 

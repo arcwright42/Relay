@@ -3,20 +3,23 @@ use crate::ProjectId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RoutingProvider {
-    TypeSafe,
     #[default]
+    OpenRouter,
+    TypeSafe,
     Vercel,
 }
 
 impl RoutingProvider {
     pub fn code(self) -> &'static str {
         match self {
+            Self::OpenRouter => "openrouter",
             Self::TypeSafe => "typesafe",
             Self::Vercel => "vercel",
         }
     }
     pub fn from_code(code: &str) -> Option<Self> {
         match code {
+            "openrouter" => Some(Self::OpenRouter),
             "typesafe" => Some(Self::TypeSafe),
             "vercel" => Some(Self::Vercel),
             _ => None,
@@ -24,6 +27,7 @@ impl RoutingProvider {
     }
     pub fn name(self) -> &'static str {
         match self {
+            Self::OpenRouter => "OpenRouter",
             Self::TypeSafe => "TypeSafe",
             Self::Vercel => "Vercel AI Gateway",
         }
@@ -57,6 +61,8 @@ pub struct RouteDecision {
 pub enum RoutingError {
     NotConfigured,
     InvalidKey,
+    ConfigurationFile,
+    ExternallyConfigured,
     Keychain,
     Unauthorized,
     RateLimited,
@@ -68,10 +74,18 @@ pub enum RoutingError {
     CatalogChanged,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoutingCredentialSource {
+    Environment,
+    EnvFile,
+    Keychain,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RoutingSnapshot {
     pub provider: RoutingProvider,
     pub configured: bool,
+    pub credential_source: Option<RoutingCredentialSource>,
     pub error: Option<RoutingError>,
 }
 

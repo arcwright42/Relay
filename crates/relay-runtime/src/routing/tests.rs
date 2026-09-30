@@ -83,6 +83,7 @@ fn router(endpoint: String, timeout: Duration, projects: Arc<Projects>) -> JevRo
             provider: RoutingProvider::TypeSafe,
             key: "test-key".into(),
         })))),
+        Ok(None),
         Some(endpoint),
         timeout,
     )
@@ -227,7 +228,11 @@ fn malformed_foreign_or_inconsistent_decisions_are_rejected() {
 #[test]
 fn transport_errors_and_timeouts_never_become_new_projects() {
     for (status, delay, error) in [
+        (400, Duration::ZERO, RoutingError::InvalidResponse),
         (401, Duration::ZERO, RoutingError::Unauthorized),
+        (402, Duration::ZERO, RoutingError::QuotaExceeded),
+        (413, Duration::ZERO, RoutingError::InputTooLarge),
+        (422, Duration::ZERO, RoutingError::InvalidResponse),
         (429, Duration::ZERO, RoutingError::RateLimited),
         (500, Duration::ZERO, RoutingError::Unavailable),
         (302, Duration::ZERO, RoutingError::Unavailable),
@@ -320,7 +325,11 @@ fn vercel_compatible_http_uses_its_model_and_saved_gateway_credential() {
 
 #[test]
 fn provider_and_key_are_one_versioned_record_and_bad_records_are_preserved() {
-    for provider in [RoutingProvider::TypeSafe, RoutingProvider::Vercel] {
+    for provider in [
+        RoutingProvider::OpenRouter,
+        RoutingProvider::TypeSafe,
+        RoutingProvider::Vercel,
+    ] {
         let credential = Credential {
             provider,
             key: "test-key".into(),
@@ -333,7 +342,234 @@ fn provider_and_key_are_one_versioned_record_and_bad_records_are_preserved() {
     for bad in [
         r#"{"version":2,"provider":"vercel","key":"test"}"#,
         r#"{"version":1,"provider":"unknown","key":"test"}"#,
+        r#"{"version":1,"provider":"openrouter","key":""}"#,
+        r#"{"version":1,"provider":"openrouter","key":"bad key"}"#,
     ] {
         assert!(credentials::decode(bad.as_bytes()).is_err());
     }
+}
+
+struct UntouchedKeychain;
+impl Credentials for UntouchedKeychain {
+    fn read(&self) -> Result<Option<Credential>, RoutingError> {
+        panic!("Environment configuration must not access Keychain")
+    }
+    fn write(&self, _: Option<&Credential>) -> Result<(), RoutingError> {
+        panic!("Environment configuration must not write to Keychain")
+    }
+}
+
+#[test]
+fn openrouter_http_routes_reuse_and_new_with_environment_key_and_versioned_response() {
+    for (choice, existing, new, expected) in [
+        (
+            "project_42",
+            0.96,
+            0.02,
+            RouteTarget::Existing(ProjectId(42)),
+        ),
+        (NEW, 0.02, 0.96, RouteTarget::NewProject),
+    ] {
+        let mut reply = response(choice, existing, new, 0.02, 0.94);
+        reply["model"] = json!("typesafe/jev-1.13-20260917");
+        reply["id"] = json!("gen-dec-test");
+        reply["provider"] = json!("TypeSafe");
+        let (url, server) = server(200, reply.to_string(), Duration::ZERO);
+        let router = JevRouter::with_credentials(
+            Arc::new(Projects::default()),
+            Arc::new(Agents),
+            Box::new(UntouchedKeychain),
+            credentials::from_environment(Ok("openrouter-test-key".into()), Path::new("unused")),
+            Some(url.replace("/v1/systemone", "/api/alpha/decisions")),
+            Duration::from_secs(2),
+        );
+        let snapshot = router.snapshot();
+        assert_eq!(snapshot.provider, RoutingProvider::OpenRouter);
+        assert_eq!(
+            snapshot.credential_source,
+            Some(RoutingCredentialSource::Environment)
+        );
+        assert!(snapshot.configured);
+        let decision = router.decide("继续完善 Relay 的项目界面").unwrap();
+        assert_eq!(decision.automatic, Some(expected));
+        assert_eq!(decision.model, "typesafe/jev-1.13-20260917");
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /api/alpha/decisions HTTP/1.1\r\n"));
+        assert!(
+            request
+                .to_lowercase()
+                .contains("authorization: bearer openrouter-test-key")
+        );
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(
+            headers
+                .to_lowercase()
+                .contains("content-type: application/json")
+        );
+        assert!(!body.contains("openrouter-test-key"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["model"], OPENROUTER_MODEL);
+        assert_eq!(body["state"]["user_request"], "继续完善 Relay 的项目界面");
+        let criteria = &body["questions"]["destination"]["criteria"];
+        assert_eq!(criteria["project_42"]["project_name"], "Relay");
+        assert_eq!(
+            criteria["project_42"]["description_excerpt"],
+            "A Rust desktop agent client"
+        );
+        assert!(criteria[NEW].is_string());
+        assert!(criteria[UNCLEAR].is_string());
+        assert_eq!(router.remove_key(), Err(RoutingError::ExternallyConfigured));
+        assert_eq!(
+            router.save_key(RoutingProvider::Vercel, "other-key".into()),
+            Err(RoutingError::ExternallyConfigured)
+        );
+        assert_eq!(router.snapshot(), snapshot);
+    }
+}
+
+#[test]
+fn openrouter_model_validation_accepts_only_the_requested_release_and_date_suffix() {
+    let router = router(
+        ENDPOINT.into(),
+        Duration::from_secs(1),
+        Arc::new(Projects::default()),
+    );
+    let (_, _, targets) = router.request("A task").unwrap();
+    for (model, valid) in [
+        (OPENROUTER_MODEL, true),
+        ("typesafe/jev-1.13-20260917", true),
+        ("typesafe/jev-1.14-20260917", false),
+        ("typesafe/jev-1.13-other", false),
+        ("typesafe/jev-1.13-20260917-extra", false),
+        ("typesafe/jev-1.13-202609", false),
+        (MODEL, false),
+    ] {
+        let mut answer = response("project_42", 0.95, 0.03, 0.02, 0.925);
+        answer["model"] = json!(model);
+        let parsed = parse(
+            &serde_json::to_vec(&answer).unwrap(),
+            &targets,
+            7,
+            OPENROUTER_MODEL,
+        );
+        assert_eq!(parsed.is_ok(), valid, "{model}");
+        if let Ok(decision) = parsed {
+            assert_eq!(
+                decision.automatic,
+                Some(RouteTarget::Existing(ProjectId(42)))
+            );
+        }
+    }
+}
+
+#[test]
+fn dotenv_parsing_precedence_and_keychain_fallback_never_mutate_process_environment() {
+    use std::env::VarError;
+    let root = std::env::temp_dir().join(format!("relay-env-{}", crate::installer::unique_id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let env_file = root.join(".env");
+    let before = std::env::var_os("OPENROUTER_API_KEY");
+    std::fs::write(&env_file, "# Jev configuration\nexport OPENROUTER_API_KEY = 'file-test-key' # inline comment\nOPENROUTER_API_KEY=second-key\nUNRELATED=ignore-me\n").unwrap();
+    let key = credentials::from_environment(Err(VarError::NotPresent), &env_file)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.credential.key, "file-test-key");
+    assert_eq!(key.source, RoutingCredentialSource::EnvFile);
+    let key = credentials::from_environment(Ok("process-test-key".into()), &env_file)
+        .unwrap()
+        .unwrap();
+    assert_eq!(key.credential.key, "process-test-key");
+    assert_eq!(key.source, RoutingCredentialSource::Environment);
+    let configured = JevRouter::with_credentials(
+        Arc::new(Projects::default()),
+        Arc::new(Agents),
+        Box::new(UntouchedKeychain),
+        credentials::from_environment(Err(VarError::NotPresent), &env_file),
+        None,
+        Duration::from_secs(1),
+    );
+    assert_eq!(
+        configured.snapshot().credential_source,
+        Some(RoutingCredentialSource::EnvFile)
+    );
+    assert_eq!(
+        configured.remove_key(),
+        Err(RoutingError::ExternallyConfigured)
+    );
+    for contents in ["OPENROUTER_API_KEY=\n", "UNRELATED=ignore-me\n"] {
+        std::fs::write(&env_file, contents).unwrap();
+        let configured = JevRouter::with_credentials(
+            Arc::new(Projects::default()),
+            Arc::new(Agents),
+            Box::new(MemoryKey(Mutex::new(Some(Credential {
+                provider: RoutingProvider::Vercel,
+                key: "saved-key".into(),
+            })))),
+            credentials::from_environment(Err(VarError::NotPresent), &env_file),
+            None,
+            Duration::from_secs(1),
+        );
+        assert_eq!(configured.snapshot().provider, RoutingProvider::Vercel);
+        assert_eq!(
+            configured.snapshot().credential_source,
+            Some(RoutingCredentialSource::Keychain)
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        credentials::from_environment(Err(VarError::NotPresent), &env_file)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::env::var_os("OPENROUTER_API_KEY"), before);
+}
+
+#[test]
+fn broken_external_configuration_is_reported_without_falling_back_to_saved_keys() {
+    use std::env::VarError;
+    let root =
+        std::env::temp_dir().join(format!("relay-bad-env-{}", crate::installer::unique_id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let env_file = root.join(".env");
+    for (contents, process_key, expected) in [
+        (
+            "OPENROUTER_API_KEY='unterminated\n",
+            Err(VarError::NotPresent),
+            RoutingError::ConfigurationFile,
+        ),
+        (
+            "OPENROUTER_API_KEY='bad key'\n",
+            Err(VarError::NotPresent),
+            RoutingError::InvalidKey,
+        ),
+        (
+            "OPENROUTER_API_KEY='valid-file-key'\n",
+            Ok("bad\nkey".into()),
+            RoutingError::InvalidKey,
+        ),
+    ] {
+        std::fs::write(&env_file, contents).unwrap();
+        let router = JevRouter::with_credentials(
+            Arc::new(Projects::default()),
+            Arc::new(Agents),
+            Box::new(UntouchedKeychain),
+            credentials::from_environment(process_key, &env_file),
+            None,
+            Duration::from_secs(1),
+        );
+        assert!(!router.snapshot().configured);
+        assert_eq!(router.snapshot().error, Some(expected));
+        assert_eq!(router.decide("A task").unwrap_err(), expected);
+        assert_eq!(
+            router.save_key(RoutingProvider::TypeSafe, "other-key".into()),
+            Err(expected)
+        );
+    }
+    std::fs::write(&env_file, "not valid env syntax").unwrap();
+    assert!(
+        credentials::from_environment(Ok("valid-process-key".into()), &env_file)
+            .unwrap()
+            .is_some()
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

@@ -3,7 +3,7 @@ mod credentials;
 #[cfg(test)]
 mod tests;
 
-use credentials::{Credential, Credentials, Keychain};
+use credentials::{ConfiguredCredential, Credential, Credentials, Keychain};
 use relay_core::{
     agents::{AgentService, MessageRole},
     projects::ProjectService,
@@ -22,6 +22,8 @@ const MODEL: &str = "jev-1.13.0";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const VERCEL_MODEL: &str = "typesafe-ai/jev";
 const VERCEL_ENDPOINT: &str = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
+const OPENROUTER_MODEL: &str = "typesafe/jev-1.13";
+const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/alpha/decisions";
 const NEW: &str = "new_project";
 const UNCLEAR: &str = "needs_user_choice";
 const REQUEST_LIMIT: usize = 24_000;
@@ -29,6 +31,7 @@ type Targets = BTreeMap<String, Option<RouteTarget>>;
 
 struct State {
     credential: Option<Credential>,
+    credential_source: Option<RoutingCredentialSource>,
     error: Option<RoutingError>,
     generation: u64,
 }
@@ -53,6 +56,7 @@ impl JevRouter {
             projects,
             agents,
             Box::new(Keychain::new(root)),
+            credentials::openrouter_configuration(),
             None,
             Duration::from_secs(8),
         )
@@ -62,12 +66,22 @@ impl JevRouter {
         projects: Arc<dyn ProjectService>,
         agents: Arc<dyn AgentService>,
         credentials: Box<dyn Credentials>,
+        external: Result<Option<ConfiguredCredential>, RoutingError>,
         endpoint_override: Option<String>,
         timeout: Duration,
     ) -> Self {
-        let (credential, error) = match credentials.read() {
-            Ok(credential) => (credential, None),
-            Err(error) => (None, Some(error)),
+        let (credential, credential_source, error) = match external {
+            Ok(Some(configured)) => (Some(configured.credential), Some(configured.source), None),
+            Ok(None) => match credentials.read() {
+                Ok(credential) => {
+                    let source = credential
+                        .as_ref()
+                        .map(|_| RoutingCredentialSource::Keychain);
+                    (credential, source, None)
+                }
+                Err(error) => (None, None, Some(error)),
+            },
+            Err(error) => (None, None, Some(error)),
         };
         let client = ureq::Agent::config_builder()
             .timeout_global(Some(timeout))
@@ -82,6 +96,7 @@ impl JevRouter {
             credential_writer: Mutex::new(()),
             state: Mutex::new(State {
                 credential,
+                credential_source,
                 error,
                 generation: 0,
             }),
@@ -154,16 +169,15 @@ impl RoutingService for JevRouter {
                 .map(|c| c.provider)
                 .unwrap_or_default(),
             configured: state.credential.is_some(),
+            credential_source: state.credential_source,
             error: state.error,
         }
     }
 
     fn save_key(&self, provider: RoutingProvider, key: String) -> Result<(), RoutingError> {
-        let key = key.trim();
-        if key.is_empty() || key.len() > 4096 || !key.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(RoutingError::InvalidKey);
-        }
+        let key = credentials::validate_key(&key)?;
         let _writer = self.credential_writer.lock().expect("credential writer");
+        self.check_credential_write()?;
         let credential = Credential {
             provider,
             key: key.into(),
@@ -171,6 +185,7 @@ impl RoutingService for JevRouter {
         self.credentials.write(Some(&credential))?;
         let mut state = self.state.lock().expect("routing state");
         state.credential = Some(credential);
+        state.credential_source = Some(RoutingCredentialSource::Keychain);
         state.error = None;
         state.generation += 1;
         Ok(())
@@ -178,9 +193,11 @@ impl RoutingService for JevRouter {
 
     fn remove_key(&self) -> Result<(), RoutingError> {
         let _writer = self.credential_writer.lock().expect("credential writer");
+        self.check_credential_write()?;
         self.credentials.write(None)?;
         let mut state = self.state.lock().expect("routing state");
         state.credential = None;
+        state.credential_source = None;
         state.error = None;
         state.generation += 1;
         Ok(())
@@ -194,12 +211,13 @@ impl RoutingService for JevRouter {
                 state
                     .credential
                     .clone()
-                    .ok_or(RoutingError::NotConfigured)?,
+                    .ok_or(state.error.unwrap_or(RoutingError::NotConfigured))?,
                 state.generation,
             )
         };
         let (revision, mut body, targets) = self.request(prompt)?;
         let (endpoint, model) = match credential.provider {
+            RoutingProvider::OpenRouter => (OPENROUTER_ENDPOINT, OPENROUTER_MODEL),
             RoutingProvider::TypeSafe => (ENDPOINT, MODEL),
             RoutingProvider::Vercel => (VERCEL_ENDPOINT, VERCEL_MODEL),
         };
@@ -213,8 +231,10 @@ impl RoutingService for JevRouter {
             .map_err(|_| RoutingError::Unavailable)?;
         match response.status().as_u16() {
             200 => {}
+            400 | 422 => return Err(RoutingError::InvalidResponse),
             401 | 403 => return Err(RoutingError::Unauthorized),
             402 => return Err(RoutingError::QuotaExceeded),
+            413 => return Err(RoutingError::InputTooLarge),
             429 => return Err(RoutingError::RateLimited),
             _ => return Err(RoutingError::Unavailable),
         }
@@ -233,6 +253,25 @@ impl RoutingService for JevRouter {
         }
         decision.elapsed_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
         Ok(decision)
+    }
+}
+
+impl JevRouter {
+    fn check_credential_write(&self) -> Result<(), RoutingError> {
+        let state = self.state.lock().expect("routing state");
+        if matches!(
+            state.credential_source,
+            Some(RoutingCredentialSource::Environment | RoutingCredentialSource::EnvFile)
+        ) {
+            return Err(RoutingError::ExternallyConfigured);
+        }
+        if matches!(
+            state.error,
+            Some(RoutingError::InvalidKey | RoutingError::ConfigurationFile)
+        ) {
+            return Err(state.error.expect("external configuration error"));
+        }
+        Ok(())
     }
 }
 
@@ -267,7 +306,7 @@ fn parse(
         .get("destination")
         .ok_or(RoutingError::InvalidResponse)?;
     let valid_probability = |p: f64| p.is_finite() && (0.0..=1.0).contains(&p);
-    if response.model != expected_model
+    if !matches_model(&response.model, expected_model)
         || answer.kind != "choice"
         || !valid_probability(answer.confidence)
         || !answer.probabilities.keys().eq(targets.keys())
@@ -318,4 +357,13 @@ fn parse(
         elapsed_ms: 0,
         model: response.model,
     })
+}
+
+fn matches_model(actual: &str, expected: &str) -> bool {
+    actual == expected
+        || (expected == OPENROUTER_MODEL
+            && actual
+                .strip_prefix(expected)
+                .and_then(|suffix| suffix.strip_prefix('-'))
+                .is_some_and(|date| date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())))
 }

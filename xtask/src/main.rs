@@ -77,6 +77,7 @@ fn validate_package(package: &Value) -> Result<()> {
         ],
         "relay-runtime" => &[
             "anyhow",
+            "dotenvy",
             "relay-core",
             "relay-acp",
             "serde",
