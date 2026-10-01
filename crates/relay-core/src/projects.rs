@@ -64,7 +64,7 @@ pub struct MemoryItem {
     pub kind: MemoryKind,
     pub name: String,
     pub content: String,
-    /// None denotes a manually authored entry. Edits retain the original source.
+    /// None means no specific visible message is linked. Edits retain the original source.
     pub source: Option<MemorySource>,
 }
 

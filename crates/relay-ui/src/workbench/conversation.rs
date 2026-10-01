@@ -216,30 +216,6 @@ impl Workbench {
                                                 )),
                                         )
                                     })
-                                    .when(
-                                        !user
-                                            && message.status == MessageStatus::Complete
-                                            && !message.text.trim().is_empty(),
-                                        |view| {
-                                            let message = message.clone();
-                                            view.child(
-                                                Button::new(("remember-reply", message.id))
-                                                    .ghost()
-                                                    .small()
-                                                    .label(self.text(Text::RememberReply))
-                                                    .text_color(rgb(MUTED))
-                                                    .on_click(cx.listener(
-                                                        move |this, _, window, cx| {
-                                                            this.remember_reply(
-                                                                message.clone(),
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                        },
-                                    )
                             })),
                     ),
             )
