@@ -31,8 +31,9 @@ fn main() -> Result<()> {
         }
         Some("icon") => build_icon(root),
         Some("bundle") => bundle(root, std::env::args().any(|arg| arg == "--release")),
+        Some("start") => start(root),
         _ => {
-            println!("cargo xtask <check-packages | verify | icon | bundle [--release]>");
+            println!("cargo xtask <check-packages | verify | icon | bundle [--release] | start>");
             Ok(())
         }
     }
@@ -276,9 +277,114 @@ fn build_icon(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn select_signing_identity(
+    configured: Option<&str>,
+    saved: Option<&str>,
+    existing: Option<&str>,
+) -> Result<String> {
+    let identity = configured.or(saved).or(existing).unwrap_or("-").trim();
+    if identity.is_empty() || identity.contains(['\n', '\r']) {
+        return Err(
+            "Signing identity must be a nonempty, single-line name or certificate SHA-1".into(),
+        );
+    }
+    Ok(identity.to_owned())
+}
+
+fn bundle_signing_identity(root: &Path, app: &Path) -> Result<String> {
+    let configured = match std::env::var("RELAY_SIGNING_IDENTITY") {
+        Ok(identity) => Some(identity),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let saved = if configured.is_none() {
+        match fs::read_to_string(root.join(".relay-signing-identity")) {
+            Ok(identity) => Some(identity),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        None
+    };
+    let existing = if configured.is_none() && saved.is_none() && app.exists() {
+        // Read the old signature before replacing its executable. Rebuilding an
+        // already signed app must not silently change its macOS privacy identity.
+        let output = Command::new("codesign")
+            .args(["--display", "--verbose=2"])
+            .arg(app)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "Could not inspect the existing Relay signature: {}. Set RELAY_SIGNING_IDENTITY explicitly to choose a new identity",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        let details = String::from_utf8_lossy(&output.stderr);
+        if let Some(authority) = details
+            .lines()
+            .find_map(|line| line.strip_prefix("Authority="))
+        {
+            Some(authority.to_owned())
+        } else if details.lines().any(|line| line == "Signature=adhoc") {
+            None
+        } else {
+            return Err("Existing Relay signature has no reusable signing identity; configure RELAY_SIGNING_IDENTITY explicitly".into());
+        }
+    } else {
+        None
+    };
+    select_signing_identity(configured.as_deref(), saved.as_deref(), existing.as_deref())
+}
+
+fn start(root: &Path) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Err("Relay currently runs on macOS only".into());
+    }
+    let app = root.join("dist/Relay.app");
+    if !app.join("Contents/MacOS/relay").is_file() {
+        return Err("Build dist/Relay.app with cargo xtask bundle before starting Relay".into());
+    }
+    let metadata = metadata()?;
+    let target = Path::new(
+        metadata["target_directory"]
+            .as_str()
+            .ok_or("Missing target directory")?,
+    );
+    fs::create_dir_all(target)?;
+    let log = target.join("relay-launch.log");
+    let mut directory = std::ffi::OsString::from("RELAY_WORKING_DIRECTORY=");
+    directory.push(root);
+    // Launch Services gives Relay its own privacy responsibility. Only pass the
+    // repository path; Relay reads .env itself, without putting keys in argv.
+    if !Command::new("/usr/bin/open")
+        .arg("--env")
+        .arg(directory)
+        .arg("--stdout")
+        .arg(&log)
+        .arg("--stderr")
+        .arg(&log)
+        .arg(&app)
+        .status()?
+        .success()
+    {
+        return Err("Could not start Relay through Launch Services".into());
+    }
+    println!("Opened {} (an existing instance is reused)", app.display());
+    println!("Startup log: {}", log.display());
+    Ok(())
+}
+
 fn bundle(root: &Path, release: bool) -> Result<()> {
     if !cfg!(target_os = "macos") {
         return Err("Relay currently bundles for macOS only".into());
+    }
+    let app = root.join("dist/Relay.app");
+    let signing_identity = bundle_signing_identity(root, &app)?;
+    if signing_identity == "-" {
+        eprintln!(
+            "Warning: ad-hoc signing can invalidate Accessibility permission after a rebuild. Configure RELAY_SIGNING_IDENTITY or .relay-signing-identity for a stable identity."
+        );
     }
     let mut args = vec!["build", "--package", "relay", "--locked"];
     if release {
@@ -291,7 +397,6 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
             .as_str()
             .ok_or("Missing target directory")?,
     );
-    let app = root.join("dist/Relay.app");
     let contents = app.join("Contents");
     fs::create_dir_all(contents.join("MacOS"))?;
     fs::create_dir_all(contents.join("Resources"))?;
@@ -334,7 +439,6 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
             version = env!("CARGO_PKG_VERSION")
         ),
     )?;
-    let signing_identity = std::env::var("RELAY_SIGNING_IDENTITY").unwrap_or_else(|_| "-".into());
     run(
         "codesign",
         &[
@@ -344,13 +448,60 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
             app.to_str().ok_or("Invalid app path")?,
         ],
     )?;
-    println!("Built {}", app.display());
+    run(
+        "codesign",
+        &[
+            "--verify",
+            "--strict",
+            app.to_str().ok_or("Invalid app path")?,
+        ],
+    )?;
+    println!(
+        "Built {} (signing identity: {signing_identity})",
+        app.display()
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuild_preserves_existing_signer_without_configuration() {
+        let signer = "Developer ID Application: Example (TEAM123456)";
+        assert_eq!(
+            select_signing_identity(None, None, Some(signer)).unwrap(),
+            signer
+        );
+        assert_eq!(select_signing_identity(None, None, None).unwrap(), "-");
+    }
+
+    #[test]
+    fn explicit_and_saved_signers_override_the_existing_bundle() {
+        assert_eq!(
+            select_signing_identity(Some("override"), Some("saved"), Some("existing")).unwrap(),
+            "override"
+        );
+        assert_eq!(
+            select_signing_identity(None, Some("saved\n"), Some("existing")).unwrap(),
+            "saved"
+        );
+        assert_eq!(
+            select_signing_identity(Some("-"), None, Some("existing")).unwrap(),
+            "-"
+        );
+    }
+
+    #[test]
+    fn invalid_signing_configuration_never_falls_back_to_another_identity() {
+        for invalid in ["", " \n", "first\nsecond"] {
+            assert!(
+                select_signing_identity(Some(invalid), Some("saved"), Some("existing")).is_err()
+            );
+            assert!(select_signing_identity(None, Some(invalid), Some("existing")).is_err());
+        }
+    }
 
     fn package(name: &str, dependencies: Value) -> Value {
         serde_json::json!({"name":name,"publish":[],"version":env!("CARGO_PKG_VERSION"),"edition":"2024","rust_version":"1.97","dependencies":dependencies})

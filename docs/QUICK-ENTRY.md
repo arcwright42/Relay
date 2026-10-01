@@ -91,7 +91,7 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 
 快捷窗口改为支持应用激活的 Floating 面板，保留跨 Space/全屏行为；点击输入框激活输入上下文，避免 PopUp 层级盖住候选窗。组合输入未提交时不发送。AI 搜索、解释、翻译在输入为空时仍可打开对应面板；选区已有文字时直接发送，无需另填问题。
 
-本地打包可用 `RELAY_SIGNING_IDENTITY='<codesign identity>' cargo xtask bundle` 固定签名身份，避免 ad-hoc 的 cdhash 随重编译变化。更换签名后如 macOS 未认可原授权，需要用户在辅助功能中重新添加当前 `dist/Relay.app`。未设置身份仍采用 ad-hoc。
+本地打包可用 `RELAY_SIGNING_IDENTITY='<codesign identity>' cargo xtask bundle` 固定签名身份，避免 ad-hoc 的 cdhash 随重编译变化。更换签名后如 macOS 未认可原授权，需要用户在辅助功能中重新添加当前 `dist/Relay.app`。签名默认行为和推荐启动方式已在下方 2026-10-01 的修正中更新。
 
 验证：全套 77 项自动化测试通过，包括空输入点击翻译后中文组合输入提交；平台独立编译通过。Computer Use 原生连接启动失败，未完成浏览器原生取词及拼音候选窗实机验收。
 
@@ -130,3 +130,13 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 使用现场三个项目对话文件的副本验证完整 runtime：项目 1 的 20 条消息成功恢复，本地 `/Users/relu/.local/bin/codex` 建连后返回模型配置；检查后消息数仍为 20，格式仍为 v3。`cargo run -p relay-ui --example quick_preview` 用实际 GPUI Metal 渲染器输出解释、翻译、搜索、未连接和错误五种状态（回答为夹具），用于人工检查布局。Computer Use 仍因 native pipe 启动失败无法进行桌面点击验收。
 
 本次 `cargo xtask verify` 全部 82 项测试通过。另在空白隔离项目通过本地 Codex 实际发送固定测试提示并收到「Relay 连接测试成功」，未使用用户历史作为测试请求。关闭旧 Relay 后，实际项目 1 也经 runtime 建连验证，20 条消息保留，本地 Codex 路径已保存。新版使用原 Developer ID 签名启动，启动诊断仍为 `trusted=true`。
+
+### 签名与启动归属修正（2026-10-01）
+
+此次故障有两项系统日志证据：用户在 18:39 已允许 Relay 的辅助功能权限，但直接作为 Codex 子进程启动时，TCC 将授权检查的 subject 归到 `com.openai.codex`。改用 Launch Services 后 subject 恢复为 `com.arcwright42.relay`，系统仍因当前 ad-hoc 签名不满足此前保存的 Developer ID 要求而拒绝，签名校验状态为 `-67050`。因此不能从 `permission=denied` 推断用户尚未授权，也不需要先重置权限。
+
+恢复本机原证书后，Relay 自身在 18:47 和 18:50 的启动记录均为 `trusted=true`，期间没有重新授权。18:50:58 的 Chrome 取词记录为 `permission=granted`、`AXSelectedText status=0`、`ax_text_chars=36`、`result_text_chars=36`，小窗日志收到同样的 36 字符；诊断不保存选中文字。
+
+防止构建再次退回临时签名：`bundle` 在覆盖旧包之前选择身份，依次使用显式环境配置、本机 `.relay-signing-identity`、已有包的签名证书。仅无配置的新环境使用 ad-hoc；无效配置或签名错误直接失败。新增 `cargo xtask start`，通过 Launch Services 启动并保留仓库 `.env` 的读取路径，不在命令行传递密钥。旧实例仍被复用，切换新构建需先退出再启动。
+
+验证：`cargo xtask verify` 的包边界、格式、全目标/全 feature Clippy 和 104 项测试通过。移开本机签名配置、取消签名环境变量后重新打包，确实沿用已有包证书；新二进制 CDHash 变化，但 TeamIdentifier 与 designated requirement 不变。通过 `cargo xtask start` 启动新构建，Relay 自身仍为 `trusted=true`，工作目录恢复到仓库，未重新授权。用户已确认恢复后的 Chrome 选中文字正常显示。
