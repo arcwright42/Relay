@@ -737,89 +737,6 @@ fn project_and_note_forms_save_through_real_pointer_and_keyboard_events(cx: &mut
     assert!(projects.snapshot().projects.last().unwrap().context[0].included);
 }
 
-#[gpui_kit::test]
-fn project_memory_can_be_added_edited_and_removed_without_calling_the_agent(
-    cx: &mut TestAppContext,
-) {
-    use gpui_kit::{component::Root, test::TestWindowExt};
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        // Dialog entrance motion uses wall time; test clicks on the settled layout.
-        cx.set_reduce_motion(true);
-    });
-    let projects = Arc::new(TestProjects::default());
-    let agents = Arc::new(ReadyAgents::default());
-    let window = cx.add_window(|window, cx| {
-        let view = cx.new(|cx| {
-            Workbench::new(
-                agents.clone(),
-                Arc::new(TestSettings::default()),
-                projects.clone(),
-                Arc::new(TestRouting),
-                window,
-                cx,
-            )
-        });
-        view.update(cx, |view, cx| view.navigate(Page::Project(0), window, cx));
-        Root::new(view, window, cx)
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("project-memory", cx);
-        window.click("add-project-memory", cx);
-        window.click("memory-kind-decision", cx);
-        window.click("project-editor-name", cx);
-    })
-    .unwrap();
-    cx.simulate_input(window.into(), "Storage choice");
-    cx.update_window(window.into(), |_, window, cx| {
-        window.click("project-editor-body", cx)
-    })
-    .unwrap();
-    cx.simulate_input(window.into(), "Use the existing local project store");
-    cx.update_window(window.into(), |_, window, cx| {
-        window.click("save-project-edit", cx)
-    })
-    .unwrap();
-    cx.run_until_parked();
-    {
-        let catalog = projects.snapshot();
-        let memory = &catalog.projects[0].memory[0];
-        assert_eq!(memory.name, "Storage choice");
-        assert_eq!(memory.content, "Use the existing local project store");
-        assert_eq!(memory.kind, MemoryKind::Decision);
-        assert!(memory.source.is_none());
-        assert!(catalog.projects[1..].iter().all(|p| p.memory.is_empty()));
-    }
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("save-project-edit").is_none());
-        window.click(("edit-memory", 1_u64), cx);
-        window.click("memory-kind-fact", cx);
-        window.click("save-project-edit", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert_eq!(
-        projects.snapshot().projects[0].revision,
-        3,
-        "The edit must be saved"
-    );
-    assert_eq!(
-        projects.snapshot().projects[0].memory[0].kind,
-        MemoryKind::Fact
-    );
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click(("remove-memory", 1_u64), cx);
-        window.click("confirm-remove-memory", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    assert!(projects.snapshot().projects[0].memory.is_empty());
-    assert!(agents.0.lock().unwrap().is_empty());
-}
-
 struct ReplyAgents;
 impl AgentService for ReplyAgents {
     fn revision(&self) -> u64 {
@@ -850,7 +767,7 @@ impl AgentService for ReplyAgents {
         }
     }
     fn dispatch(&self, _: ProjectId, _: AgentCommand) -> Result<(), String> {
-        panic!("Saving a memory must not dispatch an agent command")
+        panic!("Opening project context must not dispatch an agent command")
     }
 }
 
@@ -919,118 +836,145 @@ impl relay_core::sessions::ClientSessionsService for LocalSessionFixture {
 }
 
 #[gpui_kit::test]
-fn native_session_assignment_and_review_save_memory_to_its_project(cx: &mut TestAppContext) {
+fn native_session_assignment_and_copy_do_not_offer_manual_memory_saving(cx: &mut TestAppContext) {
     use gpui_kit::{component::Root, test::TestWindowExt};
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
     });
-    let projects = Arc::new(TestProjects::default());
-    let agents = Arc::new(ReadyAgents::default());
-    let sessions = Arc::new(LocalSessionFixture::new());
-    let window = cx.add_window(|window, cx| {
-        let view = cx.new(|cx| {
-            let mut view = Workbench::new(
-                agents.clone(),
-                Arc::new(TestSettings::default()),
-                projects.clone(),
-                Arc::new(TestRouting),
-                window,
-                cx,
-            );
-            view.set_client_session_service(sessions, cx);
-            view.navigate(Page::Sessions, window, cx);
-            view
+    for language in [Language::SimplifiedChinese, Language::English] {
+        let projects = Arc::new(TestProjects::default());
+        projects
+            .apply(ProjectCommand::SaveMemory {
+                project: ProjectId(2),
+                expected_revision: 1,
+                id: None,
+                kind: MemoryKind::Decision,
+                name: "Local decision".into(),
+                content: "Reuse the user's own client".into(),
+                source: Some(MemorySource::ClientSession {
+                    client: "codex".into(),
+                    session_id: "outside-relay".into(),
+                    message_id: 99,
+                }),
+            })
+            .unwrap();
+        let saved = projects.snapshot();
+        let agents = Arc::new(ReadyAgents::default());
+        let sessions = Arc::new(LocalSessionFixture::new());
+        let settings = Arc::new(TestSettings::default());
+        settings.set_language(language);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                let mut view = Workbench::new(
+                    agents.clone(),
+                    settings.clone(),
+                    projects.clone(),
+                    Arc::new(TestRouting),
+                    window,
+                    cx,
+                );
+                view.set_client_session_service(sessions.clone(), cx);
+                view.navigate(Page::Sessions, window, cx);
+                view
+            });
+            Root::new(view, window, cx)
         });
-        Root::new(view, window, cx)
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("client-session-codex:outside-relay", cx);
-        window.render_frame(cx);
-        window.click(("remember-client-message", 99_u64), cx);
-        assert!(window.try_find("save-project-edit").is_none());
-        window.click("assign-client-session", cx);
-        window.click(("client-session-project", 2_u64), cx);
-        window.render_frame(cx);
-        window.click(("remember-client-message", 99_u64), cx);
-        assert!(
-            projects
-                .snapshot()
-                .projects
-                .iter()
-                .all(|p| p.memory.is_empty())
-        );
-        window.click("memory-kind-decision", cx);
-        window.click("save-project-edit", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let catalog = projects.snapshot();
-    assert!(catalog.projects[0].memory.is_empty());
-    let memory = &catalog.projects[1].memory[0];
-    assert_eq!(memory.kind, MemoryKind::Decision);
-    assert_eq!(
-        memory.content,
-        "## Local decision\nReuse the user's own client"
-    );
-    assert_eq!(
-        memory.source,
-        Some(MemorySource::ClientSession {
-            client: "codex".into(),
-            session_id: "outside-relay".into(),
-            message_id: 99
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("client-session-codex:outside-relay", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find(("remember-client-message", 99_u64))
+                    .is_none()
+            );
+            window.click(("copy-client-message", 99_u64), cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                "## Local decision\nReuse the user's own client"
+            );
+            window.click("assign-client-session", cx);
+            window.click(("client-session-project", 2_u64), cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find(("remember-client-message", 99_u64))
+                    .is_none()
+            );
+            assert!(window.try_find("save-project-edit").is_none());
+            assert!(window.try_find(("copy-client-message", 99_u64)).is_some());
         })
-    );
-    assert!(agents.0.lock().unwrap().is_empty());
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            sessions.state.lock().unwrap().sessions[0].project,
+            Some(ProjectId(2))
+        );
+        assert_eq!(projects.snapshot().projects, saved.projects);
+        assert_eq!(projects.snapshot().revision, saved.revision);
+        assert!(agents.0.lock().unwrap().is_empty());
+    }
 }
 
 #[gpui_kit::test]
-fn saving_a_completed_reply_requires_review_and_preserves_its_source(cx: &mut TestAppContext) {
+fn session_keeps_memory_out_of_user_actions_and_preserves_existing_entries(
+    cx: &mut TestAppContext,
+) {
     use gpui_kit::{component::Root, test::TestWindowExt};
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
     });
-    let projects = Arc::new(TestProjects::default());
-    let window = cx.add_window(|window, cx| {
-        let view = cx.new(|cx| {
-            Workbench::new(
-                Arc::new(ReplyAgents),
-                Arc::new(TestSettings::default()),
-                projects.clone(),
-                Arc::new(TestRouting),
-                window,
-                cx,
-            )
+    for language in [Language::SimplifiedChinese, Language::English] {
+        let projects = Arc::new(TestProjects::default());
+        projects
+            .apply(ProjectCommand::SaveMemory {
+                project: ProjectId(1),
+                expected_revision: 1,
+                id: None,
+                kind: MemoryKind::Decision,
+                name: "Chosen design".into(),
+                content: "Share memory through ACP context".into(),
+                source: Some(MemorySource::Message { message_id: 12 }),
+            })
+            .unwrap();
+        let saved = projects.snapshot();
+        let settings = Arc::new(TestSettings::default());
+        settings.set_language(language);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Workbench::new(
+                    Arc::new(ReplyAgents),
+                    settings.clone(),
+                    projects.clone(),
+                    Arc::new(TestRouting),
+                    window,
+                    cx,
+                )
+            });
+            view.update(cx, |view, cx| view.navigate(Page::Project(0), window, cx));
+            Root::new(view, window, cx)
         });
-        view.update(cx, |view, cx| view.navigate(Page::Project(0), window, cx));
-        Root::new(view, window, cx)
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find(("remember-reply", 13_u64)).is_none());
-        window.click(("remember-reply", 12_u64), cx);
-        assert!(window.try_find("save-project-edit").is_some());
-        assert!(projects.snapshot().projects[0].memory.is_empty());
-        window.click("memory-kind-decision", cx);
-        window.click("save-project-edit", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    let catalog = projects.snapshot();
-    let memory = &catalog.projects[0].memory[0];
-    assert_eq!(memory.name, "Chosen design");
-    assert_eq!(
-        memory.content,
-        "## Chosen design\nShare memory through ACP context"
-    );
-    assert_eq!(memory.kind, MemoryKind::Decision);
-    assert_eq!(
-        memory.source,
-        Some(MemorySource::Message { message_id: 12 })
-    );
-    assert!(catalog.projects[1..].iter().all(|p| p.memory.is_empty()));
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("project-memory").is_none());
+            assert!(window.try_find(("remember-reply", 12_u64)).is_none());
+            assert!(window.try_find(("remember-reply", 13_u64)).is_none());
+            assert!(window.try_find("send").is_some());
+            window.click("composer-context", cx);
+            assert!(window.try_find("context-project-memory").is_none());
+            assert!(window.try_find("context-project-instructions").is_some());
+            window.click("add-context-note", cx);
+            assert!(window.try_find("save-project-edit").is_some());
+            assert!(window.try_find("note-included").is_some());
+            window.click("cancel-project-edit", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(projects.snapshot().projects, saved.projects);
+        assert_eq!(projects.snapshot().revision, saved.revision);
+    }
 }
 
 #[gpui_kit::test]

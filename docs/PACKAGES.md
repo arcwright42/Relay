@@ -7,7 +7,7 @@
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`relay-platform`、`gpui-kit` |
-| `relay-ui` | 工作台、项目、文字资料与记忆编辑、回复转存、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
+| `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
 | `relay-platform` | macOS 全局快捷键、辅助功能选区采集与原生浮窗定位 | `relay-core`、`async-channel`、`objc2`、`objc2-app-kit`、`objc2-foundation` |
 | `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
 | `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`dotenvy`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
@@ -20,7 +20,7 @@
 
 当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。macOS 能力已拆入 `relay-platform`；后续数据库等能力在需要独立边界时再拆分，接入前同步允许依赖图。
 
-薄版项目记忆复用这些边界：领域定义 MemoryItem，projects 保存事实/决策及回复来源，context 生成记忆快照和增量，UI 提供显式保存与编辑入口，routing 只读取少量标题。没有新增依赖、workspace crate、数据库或外部服务。
+薄版项目记忆复用这些边界：领域定义 MemoryItem，projects 保存事实/决策及回复来源，context 生成记忆快照和增量，routing 只读取少量标题。记忆由主 Agent 维护，UI 已移除手动记忆管理及回复转存入口，Agent 写入待接入。没有新增依赖、workspace crate、数据库或外部服务。
 
 Jev 位于 `relay-runtime::routing`，使用固定 `ureq 3.4.2`（Rustls / JSON）调用 HTTPS API，设置中的密钥通过固定 `security-framework 3.7.0` 保存到 macOS 钥匙串；环境配置优先使用 `OPENROUTER_API_KEY`，固定 `dotenvy 0.15.7` 只读解析工作目录的 `.env`。RoutingService 不使用 ACP，UI 只读取领域决策和配置状态。HTTP 和 Keychain 写入在后台调用，内存快照锁不覆盖阻塞写入；测试使用本地 HTTP 服务和内存凭据，不访问个人密钥。不新增 workspace crate；新增依赖已同步精确版本、锁文件与包边界白名单。
 

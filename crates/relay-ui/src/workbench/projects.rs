@@ -172,16 +172,6 @@ impl Workbench {
             .child(muted(self.text(Text::ContextIndependent)).text_size(px(13.)))
             .child(muted(self.text(Text::ContextSyncDetail)).text_size(px(12.)))
             .child(
-                Button::new("context-project-memory")
-                    .outline()
-                    .justify_start()
-                    .icon(IconName::Layers)
-                    .label(self.text(Text::ProjectMemory))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.show_project_memory(id, window, cx)
-                    })),
-            )
-            .child(
                 Button::new("context-project-instructions")
                     .outline()
                     .justify_start()
@@ -307,18 +297,13 @@ impl Workbench {
     ) {
         let weak = cx.entity().downgrade();
         let language = self.settings_snapshot.language;
-        let memory = matches!(command, ProjectCommand::RemoveMemory { .. });
         window.open_dialog(cx, move |dialog, _, _| {
             let weak = weak.clone();
             let cancelling = weak.clone();
             let cancel_button = weak.clone();
             let command = command.clone();
             dialog
-                .title(language.text(if memory {
-                    Text::RemoveMemory
-                } else {
-                    Text::RemoveNote
-                }))
+                .title(language.text(Text::RemoveNote))
                 .width(px(440.))
                 .close_button(false)
                 .overlay_closable(false)
@@ -327,45 +312,33 @@ impl Workbench {
                         .update(cx, |this, _| !this.project_saving)
                         .unwrap_or(true)
                 })
-                .child(muted(language.text(if memory {
-                    Text::RemoveMemoryDetail
-                } else {
-                    Text::RemoveNoteDetail
-                })))
+                .child(muted(language.text(Text::RemoveNoteDetail)))
                 .footer(
                     row()
                         .justify_end()
                         .gap(px(8.))
                         .child(
-                            Button::new(if memory {
-                                "cancel-remove-memory"
-                            } else {
-                                "cancel-remove-note"
-                            })
-                            .ghost()
-                            .label(language.text(Text::Cancel))
-                            .on_click(move |_, window, cx| {
-                                if cancel_button
-                                    .update(cx, |this, _| !this.project_saving)
-                                    .unwrap_or(true)
-                                {
-                                    window.close_dialog(cx);
-                                }
-                            }),
+                            Button::new("cancel-remove-note")
+                                .ghost()
+                                .label(language.text(Text::Cancel))
+                                .on_click(move |_, window, cx| {
+                                    if cancel_button
+                                        .update(cx, |this, _| !this.project_saving)
+                                        .unwrap_or(true)
+                                    {
+                                        window.close_dialog(cx);
+                                    }
+                                }),
                         )
                         .child(
-                            Button::new(if memory {
-                                "confirm-remove-memory"
-                            } else {
-                                "confirm-remove-note"
-                            })
-                            .primary()
-                            .label(language.text(Text::Remove))
-                            .on_click(move |_, window, cx| {
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.apply_project_change(command.clone(), true, window, cx)
-                                });
-                            }),
+                            Button::new("confirm-remove-note")
+                                .primary()
+                                .label(language.text(Text::Remove))
+                                .on_click(move |_, window, cx| {
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.apply_project_change(command.clone(), true, window, cx)
+                                    });
+                                }),
                         ),
                 )
         });

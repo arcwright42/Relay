@@ -1,6 +1,6 @@
 use super::*;
 use gpui_kit::component::popover::Popover;
-use relay_core::{MemorySource, ProjectId, sessions::*};
+use relay_core::{ProjectId, sessions::*};
 
 impl Workbench {
     pub fn set_client_session_service(
@@ -27,45 +27,6 @@ impl Workbench {
         self.client_session_error = self.client_session_service.dispatch(command).err();
         self.refresh_client_sessions(cx);
         cx.notify();
-    }
-
-    fn remember_client_message(
-        &mut self,
-        session: ClientSession,
-        message: ClientMessage,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(project) = session
-            .project
-            .and_then(|id| self.projects.iter().find(|p| p.id == id))
-            .cloned()
-        else {
-            return;
-        };
-        let source = MemorySource::ClientSession {
-            client: session.client,
-            session_id: session.native_id,
-            message_id: message.id,
-        };
-        let seed = ChatMessage {
-            id: message.id,
-            role: message.role,
-            text: message.text,
-            status: MessageStatus::Complete,
-            tools: vec![],
-            metrics: None,
-        };
-        self.open_editor(
-            super::projects::editor::EditorMode::Memory {
-                project,
-                item: None,
-                message: Some(Box::new(seed)),
-                source: Some(source),
-            },
-            window,
-            cx,
-        );
     }
 
     fn client_project_picker(&self, assigning: bool, cx: &mut Context<Self>) -> Popover {
@@ -403,7 +364,6 @@ impl Workbench {
                     )
                     .child(self.client_project_picker(true, cx)),
             )
-            .child(muted(self.text(Text::ClientSessionsRememberHint)).text_size(px(11.)))
             .child(muted(session.source.display().to_string()).text_size(px(10.)))
             .when(!session.available, |v| {
                 v.child(muted(self.text(Text::ClientSessionsMissing)).text_size(px(11.)))
@@ -425,8 +385,6 @@ impl Workbench {
                             .skip(detail.messages.len().saturating_sub(80))
                             .map(|message| {
                                 let copy = message.text.clone();
-                                let saved_message = message.clone();
-                                let saved_session = session.clone();
                                 let preview: String = message.text.chars().take(12_000).collect();
                                 column()
                                     .w_full()
@@ -460,29 +418,6 @@ impl Workbench {
                                                             ClipboardItem::new_string(copy.clone()),
                                                         )
                                                     }),
-                                            )
-                                            .child(
-                                                Button::new((
-                                                    "remember-client-message",
-                                                    message.id,
-                                                ))
-                                                .ghost()
-                                                .small()
-                                                .label(self.text(Text::RememberReply))
-                                                .disabled(
-                                                    session.project.is_none()
-                                                        || self.client_session_snapshot.saving,
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.remember_client_message(
-                                                            saved_session.clone(),
-                                                            saved_message.clone(),
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
                                             ),
                                     )
                                     .child(

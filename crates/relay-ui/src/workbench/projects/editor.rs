@@ -1,19 +1,11 @@
 use super::super::*;
-use relay_core::{
-    ContextItem, MemoryItem, MemoryKind, MemorySource, ProjectId, projects::ProjectDraft,
-};
+use relay_core::{ContextItem, ProjectId, projects::ProjectDraft};
 
 pub(in super::super) enum EditorMode {
     Project(Option<Project>),
     Note {
         project: Project,
         item: Option<ContextItem>,
-    },
-    Memory {
-        project: Project,
-        item: Option<MemoryItem>,
-        message: Option<Box<ChatMessage>>,
-        source: Option<MemorySource>,
     },
 }
 
@@ -27,7 +19,6 @@ pub(super) struct ProjectEditor {
     description: Entity<InputState>,
     body: Entity<TextareaState>,
     included: bool,
-    memory_kind: MemoryKind,
     pub saving: bool,
     error: Option<String>,
     on_saved: OnSaved,
@@ -65,32 +56,6 @@ impl ProjectEditor {
                     )
                 })
                 .unwrap_or((String::new(), String::new(), String::new(), true)),
-            EditorMode::Memory { item, message, .. } => {
-                if let Some(item) = item {
-                    (item.name.clone(), String::new(), item.content.clone(), true)
-                } else if let Some(message) = message {
-                    let name = message
-                        .text
-                        .lines()
-                        .find(|line| !line.trim().is_empty())
-                        .unwrap_or("")
-                        .trim()
-                        .trim_start_matches('#')
-                        .trim()
-                        .chars()
-                        .take(60)
-                        .collect();
-                    (name, String::new(), message.text.clone(), true)
-                } else {
-                    (String::new(), String::new(), String::new(), true)
-                }
-            }
-        };
-        let memory_kind = match &mode {
-            EditorMode::Memory {
-                item: Some(item), ..
-            } => item.kind,
-            _ => MemoryKind::Fact,
         };
         let name = cx.new(|cx| InputState::new(window, cx).default_value(name));
         let description = cx.new(|cx| InputState::new(window, cx).default_value(description));
@@ -107,7 +72,6 @@ impl ProjectEditor {
             description,
             body,
             included,
-            memory_kind,
             saving: false,
             error: None,
             on_saved,
@@ -120,8 +84,6 @@ impl ProjectEditor {
             EditorMode::Project(Some(_)) => Text::EditProject,
             EditorMode::Note { item: None, .. } => Text::AddNote,
             EditorMode::Note { item: Some(_), .. } => Text::EditNote,
-            EditorMode::Memory { item: None, .. } => Text::AddMemory,
-            EditorMode::Memory { item: Some(_), .. } => Text::EditMemory,
         })
     }
 
@@ -156,28 +118,6 @@ impl ProjectEditor {
                 content: body,
                 included: self.included,
             },
-            EditorMode::Memory {
-                project,
-                item,
-                message,
-                source,
-            } => ProjectCommand::SaveMemory {
-                project: project.id,
-                expected_revision: project.revision,
-                id: item.as_ref().map(|item| item.id),
-                kind: self.memory_kind,
-                name,
-                content: body,
-                source: item
-                    .as_ref()
-                    .and_then(|item| item.source.clone())
-                    .or_else(|| source.clone())
-                    .or_else(|| {
-                        message.as_ref().map(|message| MemorySource::Message {
-                            message_id: message.id,
-                        })
-                    }),
-            },
         };
         self.saving = true;
         self.error = None;
@@ -207,7 +147,6 @@ impl ProjectEditor {
 impl Render for ProjectEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let project = matches!(self.mode, EditorMode::Project(_));
-        let memory = matches!(self.mode, EditorMode::Memory { .. });
         let body_label = self.language.text(if project {
             Text::ProjectInstructions
         } else {
@@ -215,60 +154,6 @@ impl Render for ProjectEditor {
         });
         column()
             .gap(px(13.))
-            .when(memory, |view| {
-                let source = match &self.mode {
-                    EditorMode::Memory {
-                        item: Some(item), ..
-                    } => item.source.clone(),
-                    EditorMode::Memory {
-                        source: Some(source),
-                        ..
-                    } => Some(source.clone()),
-                    EditorMode::Memory {
-                        message: Some(message),
-                        ..
-                    } => Some(MemorySource::Message {
-                        message_id: message.id,
-                    }),
-                    _ => None,
-                };
-                let label = match source {
-                    Some(MemorySource::Message { message_id }) => format!(
-                        "{} #{message_id}",
-                        self.language.text(Text::MemoryFromReply)
-                    ),
-                    Some(MemorySource::ClientSession {
-                        client, session_id, ..
-                    }) => format!("{client} · {session_id}"),
-                    None => self.language.text(Text::MemoryManual).into(),
-                };
-                view.child(
-                    row().gap(px(8.)).children(
-                        [
-                            (MemoryKind::Fact, Text::MemoryFact, "memory-kind-fact"),
-                            (
-                                MemoryKind::Decision,
-                                Text::MemoryDecision,
-                                "memory-kind-decision",
-                            ),
-                        ]
-                        .into_iter()
-                        .map(|(kind, text, id)| {
-                            Button::new(id)
-                                .outline()
-                                .small()
-                                .label(self.language.text(text))
-                                .when(self.memory_kind == kind, |button| button.bg(rgb(0xeaeaec)))
-                                .disabled(self.saving)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.memory_kind = kind;
-                                    cx.notify();
-                                }))
-                        }),
-                    ),
-                )
-                .child(muted(label).text_size(px(11.)))
-            })
             .child(muted(self.language.text(Text::Name)).text_size(px(12.)))
             .child(
                 Input::new(&self.name)
@@ -300,14 +185,12 @@ impl Render for ProjectEditor {
             .child(
                 muted(self.language.text(if project {
                     Text::InstructionsHint
-                } else if memory {
-                    Text::MemoryEditorHint
                 } else {
                     Text::NoteHint
                 }))
                 .text_size(px(12.)),
             )
-            .when(!project && !memory, |view| {
+            .when(!project, |view| {
                 view.child(
                     Button::new("note-included")
                         .outline()
