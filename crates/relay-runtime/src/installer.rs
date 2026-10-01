@@ -17,8 +17,7 @@ use std::{
 
 pub const NODE_VERSION: &str = "24.21.0";
 pub const ADAPTER_VERSION: &str = "1.12.0";
-pub const CODEX_VERSION: &str = "0.154.0";
-pub const RELEASE: &str = "codex-acp-1.12.0-codex-0.154.0";
+pub const RELEASE: &str = "codex-acp-1.12.0-local";
 const PACKAGE: &str = include_str!("../resources/codex/package.json");
 const LOCK: &str = include_str!("../resources/codex/package-lock.json");
 
@@ -30,6 +29,7 @@ pub struct Installer {
 pub struct PreparedAgent {
     pub launch: LaunchSpec,
     pub version: String,
+    pub executable: PathBuf,
 }
 
 impl Installer {
@@ -70,6 +70,26 @@ impl Installer {
             .map_err(|_| anyhow::anyhow!("Installer lock unavailable"))?;
         if cancelled() {
             bail!("Preparation cancelled");
+        }
+        // Resolve and validate the user's harness before any adapter download.
+        // CODEX_PATH is always explicit: the adapter can never use its npm CLI dependency.
+        let codex = match source {
+            AgentSource::Auto => discover_local().into_iter().next().context(
+                "No local Codex installation was found. Install Codex locally or choose its executable in Agents.",
+            )?,
+            AgentSource::Local(path) => path.clone(),
+        };
+        if !codex.is_absolute() || !codex.is_file() {
+            bail!("Choose an existing absolute path to the Codex executable.");
+        }
+        fs::create_dir_all(&self.root)?;
+        let mut check = Command::new(&codex);
+        check
+            .arg("--version")
+            .env("PATH", self.harness_path(&codex)?);
+        let version = run(&mut check, &self.root, Duration::from_secs(10), &cancelled)?;
+        if !version.to_ascii_lowercase().contains("codex") {
+            bail!("The selected executable did not identify itself as Codex.");
         }
         let (platform, checksum) = node_archive()?;
         fs::create_dir_all(self.root.join("components"))?;
@@ -121,7 +141,7 @@ impl Installer {
             activate(&extracted, &self.node_dir())?;
         }
         if !self.installed() {
-            progress("Installing Codex…");
+            progress("Preparing ACP adapter…");
             let staging = Staging::new(&self.root.join("components"))?;
             fs::write(staging.0.join("package.json"), PACKAGE)?;
             fs::write(staging.0.join("package-lock.json"), LOCK)?;
@@ -133,6 +153,7 @@ impl Installer {
                 .args([
                     "ci",
                     "--ignore-scripts",
+                    "--omit=optional",
                     "--no-audit",
                     "--no-fund",
                     "--registry=https://registry.npmjs.org",
@@ -151,11 +172,12 @@ impl Installer {
                 Duration::from_secs(300),
                 &cancelled,
             )?;
-            let mut check = Command::new(staging.0.join("node_modules/.bin/codex"));
-            check.arg("--version").env("PATH", self.child_path()?);
-            let version = run(&mut check, &staging.0, Duration::from_secs(15), &cancelled)?;
-            if !version.split_whitespace().any(|part| part == CODEX_VERSION) {
-                bail!("Installed Codex version did not match the manifest");
+            let adapter = staging
+                .0
+                .join("node_modules/@agentclientprotocol/codex-acp/package.json");
+            let metadata: serde_json::Value = serde_json::from_slice(&fs::read(adapter)?)?;
+            if metadata["version"] != ADAPTER_VERSION {
+                bail!("Installed ACP adapter version did not match the manifest");
             }
             fs::write(staging.0.join("relay-lock.sha256"), lock_hash())?;
             if cancelled() {
@@ -163,28 +185,10 @@ impl Installer {
             }
             activate(&staging.0, &self.agent_dir())?;
         }
-        let (codex, version) = match source {
-            AgentSource::Managed => (
-                self.agent_dir().join("node_modules/.bin/codex"),
-                format!("Codex {CODEX_VERSION}"),
-            ),
-            AgentSource::Local(path) => {
-                if !path.is_absolute() || !path.is_file() {
-                    bail!("Choose an existing absolute path to the Codex executable.");
-                }
-                let mut check = Command::new(path);
-                check.arg("--version").env("PATH", self.child_path()?);
-                let version = run(&mut check, &self.root, Duration::from_secs(10), &cancelled)?;
-                if !version.to_ascii_lowercase().contains("codex") {
-                    bail!("The selected executable did not identify itself as Codex.");
-                }
-                (path.clone(), version.trim().to_owned())
-            }
-        };
         let mut env = BTreeMap::new();
         env.insert(
             "PATH".into(),
-            self.child_path()?.to_string_lossy().into_owned(),
+            self.harness_path(&codex)?.to_string_lossy().into_owned(),
         );
         env.insert("CODEX_PATH".into(), codex.to_string_lossy().into_owned());
         env.insert("INITIAL_AGENT_MODE".into(), "agent".into());
@@ -199,7 +203,8 @@ impl Installer {
                 ],
                 env,
             },
-            version: format!("{version} · ACP {ADAPTER_VERSION}"),
+            version: format!("{} · ACP {ADAPTER_VERSION}", version.trim()),
+            executable: codex,
         })
     }
 
@@ -208,6 +213,19 @@ impl Installer {
         paths.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
         ));
+        paths.extend([
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+        ]);
+        if let Some(home) = std::env::var_os("HOME") {
+            paths.push(PathBuf::from(home).join(".local/bin"));
+        }
+        Ok(std::env::join_paths(paths)?)
+    }
+
+    fn harness_path(&self, codex: &Path) -> Result<std::ffi::OsString> {
+        let mut paths: Vec<_> = codex.parent().map(Path::to_owned).into_iter().collect();
+        paths.extend(std::env::split_paths(&self.child_path()?));
         Ok(std::env::join_paths(paths)?)
     }
 }
@@ -222,7 +240,9 @@ fn node_archive() -> Result<(&'static str, &'static str)> {
             "darwin-x64",
             "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
         )),
-        _ => bail!("Managed Codex currently supports macOS on Apple Silicon and Intel."),
+        _ => bail!(
+            "The Codex ACP adapter runtime currently supports macOS on Apple Silicon and Intel."
+        ),
     }
 }
 
@@ -230,7 +250,7 @@ fn lock_hash() -> String {
     digest_hex(Sha256::digest(LOCK.as_bytes()).as_ref())
 }
 
-fn digest_hex(bytes: &[u8]) -> String {
+pub(crate) fn digest_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -377,21 +397,43 @@ pub fn discover_local() -> Vec<PathBuf> {
             );
         }
     }
-    let mut found = BTreeMap::new();
+    directories.push(PathBuf::from(
+        "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS",
+    ));
+    let mut seen = std::collections::BTreeSet::new();
+    let mut found = Vec::new();
     for directory in directories {
         let path = directory.join("codex");
-        if path.is_file()
+        if path.is_absolute()
+            && path.is_file()
             && let Ok(real) = path.canonicalize()
+            && seen.insert(real)
         {
-            found.entry(real).or_insert(path);
+            found.push(path);
         }
     }
-    found.into_values().collect()
+    found
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_local_executable_does_not_prepare_or_download_components() {
+        let root = std::env::temp_dir().join(format!("relay-missing-local-{}", unique_id()));
+        let installer = Installer::new(root.clone());
+        let error = installer
+            .prepare(
+                &AgentSource::Local(root.join("missing-codex")),
+                |_| panic!("No adapter should be prepared without a local harness"),
+                || false,
+            )
+            .err()
+            .expect("Missing local executable must fail");
+        assert!(error.to_string().contains("existing absolute path"));
+        assert!(!root.exists());
+    }
     #[test]
     fn component_identity_matches_the_embedded_package_lock() {
         let package: serde_json::Value = serde_json::from_str(PACKAGE).unwrap();
@@ -400,15 +442,12 @@ mod tests {
             package["dependencies"]["@agentclientprotocol/codex-acp"],
             ADAPTER_VERSION
         );
-        assert_eq!(package["dependencies"]["@openai/codex"], CODEX_VERSION);
+        assert!(package["dependencies"]["@openai/codex"].is_null());
         assert_eq!(
-            lock["packages"]["node_modules/@openai/codex"]["version"],
-            CODEX_VERSION
+            lock["packages"][""]["dependencies"],
+            package["dependencies"]
         );
-        assert_eq!(
-            RELEASE,
-            format!("codex-acp-{ADAPTER_VERSION}-codex-{CODEX_VERSION}")
-        );
+        assert_eq!(RELEASE, format!("codex-acp-{ADAPTER_VERSION}-local"));
     }
     #[test]
     fn checksum_rejects_corruption_and_activation_preserves_previous_version() {

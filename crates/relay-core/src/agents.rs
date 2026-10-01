@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AgentSource {
     #[default]
-    Managed,
+    Auto,
     Local(PathBuf),
 }
 

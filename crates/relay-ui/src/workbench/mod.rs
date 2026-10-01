@@ -8,6 +8,7 @@ mod projects;
 mod quick;
 pub use quick::{OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick};
 mod routing;
+mod sessions;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +29,7 @@ use relay_core::{
     agents::*,
     projects::{ProjectCommand, ProjectService},
     routing::RoutingService,
+    sessions::{ClientSessionsService, ClientSessionsSnapshot, EmptyClientSessions},
     settings::{Language, SettingsService, SettingsSnapshot},
 };
 use std::{sync::Arc, time::Duration};
@@ -126,6 +128,14 @@ pub struct Workbench {
     agent_states: Vec<AgentSnapshot>,
     agent_errors: Vec<Option<String>>,
     agent_revision: u64,
+    client_session_service: Arc<dyn ClientSessionsService>,
+    client_session_snapshot: ClientSessionsSnapshot,
+    client_session_revision: u64,
+    client_session_filter: Option<relay_core::ProjectId>,
+    client_session_filter_open: bool,
+    client_session_binding_open: bool,
+    client_session_error: Option<String>,
+    client_session_search: Entity<InputState>,
     picker_open: bool,
     conversation_scroll: ScrollHandle,
     _agent_updates: Task<()>,
@@ -160,11 +170,23 @@ impl Workbench {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(language.text(Text::SearchPlaceholder))
         });
+        let client_session_search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(language.text(Text::ClientSessionsSearch))
+        });
         let mut subscriptions = vec![cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         })];
+        subscriptions.push(cx.subscribe_in(
+            &client_session_search,
+            window,
+            |_, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        ));
         for draft in &drafts {
             subscriptions.push(
                 cx.subscribe_in(draft, window, |this, _, event, window, cx| {
@@ -205,6 +227,7 @@ impl Workbench {
                     .update_in(cx, |this, window, cx| {
                         this.refresh_projects(window, cx);
                         this.refresh_agents(cx);
+                        this.refresh_client_sessions(cx);
                         this.advance_routed_send(window, cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
@@ -238,6 +261,14 @@ impl Workbench {
             agent_service,
             agent_states,
             agent_revision,
+            client_session_service: Arc::new(EmptyClientSessions),
+            client_session_snapshot: ClientSessionsSnapshot::default(),
+            client_session_revision: 0,
+            client_session_filter: None,
+            client_session_filter_open: false,
+            client_session_binding_open: false,
+            client_session_error: None,
+            client_session_search,
             picker_open: false,
             conversation_scroll: ScrollHandle::new(),
             _agent_updates: updates,
@@ -256,6 +287,9 @@ impl Workbench {
         // User-owned project names, notes and protocol inputs never change with UI language.
         self.search.update(cx, |search, cx| {
             search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
+        });
+        self.client_session_search.update(cx, |search, cx| {
+            search.set_placeholder(language.text(Text::ClientSessionsSearch), window, cx)
         });
         for draft in &self.drafts {
             draft.update(cx, |draft, cx| {
@@ -367,6 +401,7 @@ impl Render for Workbench {
                 Page::Agents if !self.projects.is_empty() => self.agents(cx),
                 Page::Agents => self.home(cx),
                 Page::Settings => self.settings(cx),
+                Page::Sessions => self.client_sessions(cx),
                 Page::Inbox => column()
                     .flex_1()
                     .items_center()

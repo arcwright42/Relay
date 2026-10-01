@@ -1,7 +1,9 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
 use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
-use relay_runtime::{AgentRuntime, JevRouter, MoliFetcher, ProjectStore, SettingsStore};
+use relay_runtime::{
+    AgentRuntime, ClientSessionStore, JevRouter, MoliFetcher, ProjectStore, SettingsStore,
+};
 use relay_ui::{
     FocusSearch, OpenAgentSettings, OpenProject, OpenQuick, OpenWorkspace, Quit,
     RequestAccessibility, ResizeQuick, SendMessage, Workbench, apply_language,
@@ -15,6 +17,7 @@ struct Services {
     projects: Arc<ProjectStore>,
     routing: Arc<JevRouter>,
     fetcher: Arc<MoliFetcher>,
+    client_sessions: Arc<ClientSessionStore>,
 }
 struct Desktop {
     services: Services,
@@ -133,6 +136,7 @@ fn open_window(
                     window,
                     cx,
                 );
+                view.set_client_session_service(services.client_sessions, cx);
                 if quick {
                     view.capture(selection, services.fetcher, window, cx);
                 }
@@ -221,12 +225,18 @@ fn main() {
     let projects = Arc::new(ProjectStore::new(directory.clone()));
     let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
     let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
+    let client_sessions = Arc::new(ClientSessionStore::new(
+        directory.clone(),
+        projects.clone(),
+        agents.clone(),
+    ));
     let services = Services {
         agents: agents.clone(),
         settings: settings.clone(),
         projects,
         routing,
         fetcher: Arc::new(MoliFetcher::new(&directory)),
+        client_sessions: client_sessions.clone(),
     };
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     application.on_reopen(|cx| open_workspace(None, cx));
@@ -259,6 +269,13 @@ fn main() {
             let fetcher = shutdown_fetcher.clone();
             cx.background_executor().spawn(async move {
                 fetcher.shutdown();
+            })
+        })
+        .detach();
+        cx.on_app_quit(move |cx| {
+            let client_sessions = client_sessions.clone();
+            cx.background_executor().spawn(async move {
+                client_sessions.shutdown();
             })
         })
         .detach();

@@ -1,4 +1,4 @@
-//! Opt-in end-to-end check; installs managed components and connects to Codex.
+//! Opt-in end-to-end check; prepares the ACP adapter and connects to local Codex.
 //! No inference request is sent unless --prompt is supplied.
 use relay_core::{
     agents::{AgentCommand, AgentService, AgentSource, ConnectionStatus, MessageRole},
@@ -27,7 +27,7 @@ fn main() -> Result<(), String> {
         .iter()
         .position(|a| a == "--local")
         .and_then(|i| args.get(i + 1))
-        .map_or(AgentSource::Managed, |path| AgentSource::Local(path.into()));
+        .map_or(AgentSource::Auto, |path| AgentSource::Local(path.into()));
     let projects = Arc::new(ProjectStore::new(root.clone()));
     let id = projects
         .snapshot()

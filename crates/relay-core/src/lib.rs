@@ -5,6 +5,7 @@ pub mod agents;
 pub mod capture;
 pub mod projects;
 pub mod routing;
+pub mod sessions;
 pub mod settings;
 
 pub use projects::{

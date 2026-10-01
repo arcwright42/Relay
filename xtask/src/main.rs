@@ -144,7 +144,7 @@ fn check_packages() -> Result<()> {
             package["name"].as_str().unwrap_or("unknown")
         );
     }
-    validate_managed_packages(
+    validate_adapter_packages(
         &serde_json::from_str(include_str!(
             "../../crates/relay-runtime/resources/codex/package.json"
         ))?,
@@ -152,7 +152,7 @@ fn check_packages() -> Result<()> {
             "../../crates/relay-runtime/resources/codex/package-lock.json"
         ))?,
     )?;
-    println!("managed Codex: package versions and integrity lock OK");
+    println!("Codex ACP adapter: package versions and integrity lock OK");
     Ok(())
 }
 
@@ -165,23 +165,22 @@ fn exact_version(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.bytes().all(|c| c.is_ascii_digit()))
 }
 
-fn validate_managed_packages(package: &Value, lock: &Value) -> Result<()> {
+fn validate_adapter_packages(package: &Value, lock: &Value) -> Result<()> {
     if package["private"] != true || lock["lockfileVersion"] != 3 {
-        return Err("Managed components must be private and use npm lockfile v3".into());
+        return Err("Adapter components must be private and use npm lockfile v3".into());
     }
     let dependencies = package["dependencies"]
         .as_object()
-        .ok_or("Missing managed dependencies")?;
-    if dependencies.len() != 2
-        || !dependencies.contains_key("@agentclientprotocol/codex-acp")
-        || !dependencies.contains_key("@openai/codex")
-    {
-        return Err("Review the managed Codex package boundary before adding dependencies".into());
+        .ok_or("Missing adapter dependency")?;
+    if dependencies.len() != 1 || !dependencies.contains_key("@agentclientprotocol/codex-acp") {
+        return Err(
+            "Only the ACP adapter may be a direct dependency; use a local Codex executable".into(),
+        );
     }
     if lock["packages"][""]["dependencies"] != package["dependencies"]
-        || package["overrides"]["@openai/codex"] != package["dependencies"]["@openai/codex"]
+        || !package["overrides"].is_null()
     {
-        return Err("Managed dependency manifest, override, and lockfile disagree".into());
+        return Err("Adapter dependency manifest and lockfile disagree".into());
     }
     for (name, version) in dependencies {
         let version = version.as_str().ok_or("Invalid component version")?;
@@ -386,7 +385,7 @@ mod tests {
     }
 }
 #[test]
-fn managed_packages_reject_floating_versions_and_missing_integrity() {
+fn adapter_packages_reject_floating_versions_and_missing_integrity() {
     let package: Value = serde_json::from_str(include_str!(
         "../../crates/relay-runtime/resources/codex/package.json"
     ))
@@ -395,11 +394,11 @@ fn managed_packages_reject_floating_versions_and_missing_integrity() {
         "../../crates/relay-runtime/resources/codex/package-lock.json"
     ))
     .unwrap();
-    assert!(validate_managed_packages(&package, &lock).is_ok());
+    assert!(validate_adapter_packages(&package, &lock).is_ok());
     let mut floating = package.clone();
-    floating["dependencies"]["@openai/codex"] = "latest".into();
-    assert!(validate_managed_packages(&floating, &lock).is_err());
+    floating["dependencies"]["@agentclientprotocol/codex-acp"] = "latest".into();
+    assert!(validate_adapter_packages(&floating, &lock).is_err());
     let mut corrupt = lock.clone();
     corrupt["packages"]["node_modules/@openai/codex"]["integrity"] = Value::Null;
-    assert!(validate_managed_packages(&package, &corrupt).is_err());
+    assert!(validate_adapter_packages(&package, &corrupt).is_err());
 }

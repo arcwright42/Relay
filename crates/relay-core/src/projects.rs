@@ -51,6 +51,11 @@ impl MemoryKind {
 pub enum MemorySource {
     /// A visible message in this project's Relay conversation, not a native ACP ID.
     Message { message_id: u64 },
+    ClientSession {
+        client: String,
+        session_id: String,
+        message_id: u64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

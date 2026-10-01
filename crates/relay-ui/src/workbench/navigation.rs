@@ -29,7 +29,12 @@ impl Workbench {
             .rounded(px(8.))
             .text_size(px(13.))
             .when(self.page == page, |this| this.bg(rgb(0xeaeaec)))
-            .on_click(cx.listener(move |this, _, window, cx| this.navigate(page, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if page == Page::Sessions {
+                    this.client_session_filter = None;
+                }
+                this.navigate(page, window, cx)
+            }))
     }
 
     pub(super) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> Div {
@@ -101,6 +106,13 @@ impl Workbench {
                         self.text(Text::Inbox),
                         IconName::Inbox,
                         Page::Inbox,
+                        cx,
+                    ))
+                    .child(self.nav_button(
+                        "client-sessions",
+                        self.text(Text::ClientSessions),
+                        IconName::FileText,
+                        Page::Sessions,
                         cx,
                     )),
             )
@@ -176,6 +188,7 @@ impl Workbench {
             Page::Project(index) => self.projects[index].name.as_str(),
             Page::Home => "",
             Page::Inbox => self.text(Text::Inbox),
+            Page::Sessions => self.text(Text::ClientSessions),
             Page::Agents => self.text(Text::Agents),
             Page::Settings => self.text(Text::Settings),
         };
@@ -219,6 +232,20 @@ impl Workbench {
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_context(window, cx);
                                 })),
+                        )
+                        .child(
+                            icon_button(
+                                "project-client-sessions",
+                                IconName::List,
+                                self.text(Text::ClientSessions),
+                            )
+                            .on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.client_session_filter =
+                                        this.projects.get(this.selected_project).map(|p| p.id);
+                                    this.navigate(Page::Sessions, window, cx);
+                                },
+                            )),
                         )
                         .child(
                             icon_button(

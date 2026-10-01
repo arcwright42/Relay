@@ -3,6 +3,7 @@
 pub enum Page {
     Home,
     Inbox,
+    Sessions,
     Project(usize),
     Agents,
     Settings,

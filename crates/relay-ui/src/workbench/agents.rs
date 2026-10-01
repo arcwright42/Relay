@@ -103,7 +103,7 @@ impl Workbench {
                             .child(div().font_weight(FontWeight::MEDIUM).child("Codex"))
                             .child(
                                 muted(match state.source {
-                                    AgentSource::Managed => self.text(Text::Managed),
+                                    AgentSource::Auto => self.text(Text::AutoLocal),
                                     AgentSource::Local(_) => self.text(Text::LocalInstall),
                                 })
                                 .text_size(px(11.)),
@@ -284,11 +284,7 @@ impl Workbench {
         let source = state.source.clone();
         Button::new(id)
             .primary()
-            .label(if state.installed {
-                self.text(Text::ConnectCodex)
-            } else {
-                self.text(Text::SetupCodex)
-            })
+            .label(self.text(Text::ConnectCodex))
             .rounded(px(9.))
             .disabled(state.status.is_busy())
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -537,17 +533,16 @@ impl Workbench {
                                         .gap(px(10.))
                                         .flex_wrap()
                                         .child(
-                                            Button::new("use-managed-codex")
+                                            Button::new("detect-local-codex")
                                                 .outline()
-                                                .label(self.text(Text::Managed))
+                                                .label(self.text(Text::AutoLocal))
                                                 .disabled(state.status.is_busy())
-                                                .when(
-                                                    state.source == AgentSource::Managed,
-                                                    |button| button.bg(rgb(0xededf0)),
-                                                )
+                                                .when(state.source == AgentSource::Auto, |button| {
+                                                    button.bg(rgb(0xededf0))
+                                                })
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.agent_action(
-                                                        AgentCommand::Connect(AgentSource::Managed),
+                                                        AgentCommand::Connect(AgentSource::Auto),
                                                         cx,
                                                     );
                                                 })),
@@ -580,8 +575,8 @@ impl Workbench {
                                 )
                                 .child(
                                     muted(match &state.source {
-                                        AgentSource::Managed => {
-                                            self.text(Text::ManagedDetail).to_owned()
+                                        AgentSource::Auto => {
+                                            self.text(Text::AutoLocalDetail).to_owned()
                                         }
                                         AgentSource::Local(path) => path.display().to_string(),
                                     })

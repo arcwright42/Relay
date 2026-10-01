@@ -1,16 +1,16 @@
 # Codex 接入
 
-当前首个 Harness 为 Codex。应用内置其入口和安装清单，首次连接按需准备运行组件；扫描已有安装是可选操作。Relay 的 UI、状态管理、存储、安装器和 ACP 客户端均为 Rust，上游 `codex-acp` 的 JavaScript 与 Node 作为独立组件管理。
+当前首个 Harness 为 Codex。Relay 自动发现或连接用户本地安装，复用其登录、模型和原生配置，不安装或升级 Harness 本体。UI、状态管理、存储和 ACP 客户端均为 Rust；只在需要时准备固定的 `codex-acp` 与 Node 协议组件。
 
 ## 使用流程
 
-1. 在项目输入框点击 **Codex**，再点击 **Set up Codex / Connect Codex**。安装过程显示下载、准备、连接状态，可取消并重试。
+1. 在项目输入框点击 **Codex**，再点击 **连接本地 Codex / Connect local Codex**。默认自动发现已有安装；没有找到时明确提示安装或指定可执行文件，不回退到托管 CLI。适配器准备和连接状态可取消、重试。
 2. 已有 Codex 登录由 Codex 自身复用。需要认证时选择 **ChatGPT** 打开浏览器；**API Key (from environment)** 使用应用启动环境中的 `CODEX_API_KEY` / `OPENAI_API_KEY`。当前没有自定义供应商或密钥输入界面。Relay 不复制密钥到项目文件。
 3. 连接后，菜单显示 **Codex · 当前模型**。模型、推理强度和模式等选项来自当前 Agent 的 `configOptions`，不维护硬编码模型表。切换等待 Agent 确认，失败时保留实际配置并显示原因。
 4. 输入消息，点击发送或 `⌘Enter`。回复流式显示；工具需要审批时按 Agent 提供的选项允许或拒绝。停止按钮发送 ACP 取消，收到终态后才允许下一轮；10 秒内未确认则关闭连接并保留未完成标记。
 5. **Agents** 页面管理所选项目的安装来源、连接和工作目录。默认每个项目使用独立的 Relay 工作目录；可以改为现有文件夹。改变工作目录会重建执行会话，可见对话仍属于原项目。
 
-工作目录不是系统沙箱边界；工具执行权限由 Codex 的模式、沙箱及审批共同落实。项目指令和选用的文字资料会随消息发送，示例资料已移除。图片、文件附件、语音、划词入口及多 Agent 委派暂未接通。
+工作目录不是系统沙箱边界；工具执行权限由 Codex 的模式、沙箱及审批共同落实。项目指令和选用的文字资料会随消息发送，示例资料已移除。图片、文件附件、语音及多 Agent 委派暂未接通。
 
 ## 组件与包治理
 
@@ -18,14 +18,14 @@
 | --- | --- |
 | Rust `agent-client-protocol` | 2.2.0，协议协商 v1 |
 | `@agentclientprotocol/codex-acp` | 1.12.0 |
-| `@openai/codex` | 0.154.0，直接依赖和 override 同时固定 |
+| Codex Harness | 用户本地安装，不固定或下载 CLI 版本 |
 | Node | 24.21.0，macOS arm64 / x64 官方归档及 SHA-256 |
 
-清单位于 `crates/relay-runtime/resources/codex/`。Node 由 macOS 系统 `curl` 下载、校验后由 `tar` 解压；npm 使用独立缓存和配置文件执行 `ci --ignore-scripts`，lockfile 为每个包锁定 URL、版本和 SHA-512 integrity。无需预装 Node、npm 或 Codex。
+清单位于 `crates/relay-runtime/resources/codex/`。Node 由 macOS 系统 `curl` 下载、校验后由 `tar` 解压；npm 使用独立缓存和配置文件执行 `ci --ignore-scripts --omit=optional`，lockfile 为每个包锁定 URL、版本和 SHA-512 integrity。需要已有本地 Codex；无需另外为适配器预装 Node 或 npm。上游适配器的 Codex npm 包作为传递依赖只保留启动包装和包元数据，可选平台 CLI 二进制不会安装；Relay 始终显式设置本地 `CODEX_PATH`。
 
-安装先进入临时目录，检查版本与 lockfile 后原子激活，失败不覆盖可用版本。旧目录保留供后续治理，尚未提供在线升级和用户回滚菜单。连接时不会运行 `npx @latest` 或修改全局 npm 安装。使用本地 Codex 时检查绝对路径和版本输出，适配器通过 `CODEX_PATH` 调用它；本地版本兼容性由实际握手和会话检查确认。
+安装先进入临时目录，检查版本与 lockfile 后原子激活，失败不覆盖可用版本。旧目录保留供后续治理，尚未提供在线升级和用户回滚菜单。连接时不会运行 `npx @latest` 或修改全局 npm 安装。准备适配器前先检查本地 Codex 的绝对路径和版本输出，未找到时不会下载组件。适配器通过 `CODEX_PATH` 调用它；本地版本兼容性由实际握手和会话检查确认。
 
-常见路径扫描只检查 `PATH`、Homebrew、用户 npm/Volta/asdf 与有限数量的 nvm 版本目录，不递归扫描整块磁盘，也不在扫描时执行候选程序。
+常见路径扫描按顺序检查 `PATH`、Homebrew、用户 npm/Volta/asdf 与有限数量的 nvm 版本目录，并回退检查 ChatGPT 应用内的 CLI，不递归扫描整块磁盘，也不在扫描时执行候选程序。
 
 ## 数据与线程边界
 
@@ -35,13 +35,15 @@
 Relay/
   projects.json
   components/node/24.21.0/
-  components/agents/codex-acp-1.12.0-codex-0.154.0/
+  components/agents/codex-acp-1.12.0-local/
   cache/npm/
+  client-sessions/index.json
+  client-sessions/archives/<hash>.json
   projects/<project-id>/conversation.json
   projects/<project-id>/workspace/
 ```
 
-`projects.json` 保存项目定义、指令和文字资料及其版本，独立于 Agent。`conversation.json` v2 保存可见消息、工具摘要、工作目录、来源、已确认配置、原生 session ID、上下文同步检查点及对话诊断；兼容读取 v1。文件使用 0600 权限和临时文件替换；发送前先写入未确认状态，写入失败不发送 prompt。流式内容约每秒检查点，轮次结束与正常退出时刷新。恢复后将未结束的回复标记为 interrupted。无法解析或版本不支持的文件保留原样，禁止写入覆盖。
+`projects.json` 保存项目定义、指令、文字资料及薄记忆，独立于 Agent。本地 Client 会话中心启动及每 30 分钟同步，见 [本地会话中心](CLIENT-SESSIONS.md)。`conversation.json` 兼容 v1–v3，保存可见消息、工具摘要、工作目录、来源、已确认配置、原生 session ID、上下文同步检查点及对话诊断，保留 v3 Harness 元数据。文件使用 0600 权限和临时文件替换；发送前先写入未确认状态，写入失败不发送 prompt。流式内容约每秒检查点，轮次结束与正常退出时刷新。恢复后将未结束的回复标记为 interrupted。无法解析或版本不支持的文件保留原样，禁止写入覆盖。
 
 每个项目拥有独立 ACP 连接和状态。连接 generation 拒绝已替换进程的迟到事件。安装、协议和存储不在 GPUI 渲染线程执行；退出时停止进程组并刷新记录。UI 仅访问 `relay-core::AgentService` 的命令和修订快照。
 
@@ -59,9 +61,11 @@ cargo run -p relay-runtime --example codex_probe -- --prompt 'Reply with only: R
 
 `verify` 不依赖真实账号或网络，使用 Rust ACP 子进程验证认证、模型与配置确认、权限等待、取消、恢复去重、进程回收；另有项目隔离、损坏文件保护、退出保存、安装校验及包规则测试。
 
-`codex_probe` 是主动执行的真实连接检查，数据和组件位于数据目录的 `probes/codex/`，不进入用户项目目录。默认仅安装、连接并读取模型数量，不调用推理；`--prompt` 才发送真实消息并产生正常模型用量。会复用现有 Codex 认证；没有登录时退出并提示从应用登录。必要时设置独立 `RELAY_DATA_DIR`。旧版本 probe 的项目 9001 不迁入真实项目列表。
+`codex_probe` 是主动执行的真实连接检查，使用本地 Codex；数据和适配器组件位于数据目录的 `probes/codex/`，不进入用户项目目录。默认仅安装、连接并读取模型数量，不调用推理；`--prompt` 才发送真实消息并产生正常模型用量。会复用现有 Codex 认证；没有登录时退出并提示从应用登录。必要时设置独立 `RELAY_DATA_DIR`。旧版本 probe 的项目 9001 不迁入真实项目列表。
 
-2026-09-22 在 Apple Silicon macOS 完成从空组件目录的托管安装、ACP 握手、5 个模型的动态发现，以及原生 UI 的模型切换、真实回复、项目切换、可选本地扫描和重启恢复验证。新账号的浏览器 OAuth 最终授权需要账号本人操作；协议认证状态机由离线测试覆盖。Intel 归档已配置校验值，尚未在 Intel 硬件上运行验证。
+2026-09-30 在隔离数据目录重新安装 ACP 适配器，并连接本地 Codex 0.159.0：返回 8 个模型选项，当前为 6.1 Sol，最小请求成功返回 `OK`。新组件目录没有 Codex 平台包或原生 CLI 二进制。`cargo xtask verify` 的包边界、格式、Clippy 和 101 个测试通过。
+
+2026-09-22 验证的是旧托管链路。当前版本改为本地 Harness，保留已有缓存但不再使用其 CLI。此前在 Apple Silicon macOS 完成从空组件目录的组件准备、ACP 握手、5 个模型的动态发现，以及原生 UI 的模型切换、真实回复、项目切换、可选本地扫描和重启恢复验证。新账号的浏览器 OAuth 最终授权需要账号本人操作；协议认证状态机由离线测试覆盖。Intel 归档已配置校验值，尚未在 Intel 硬件上运行验证。
 
 ## 设计依据
 

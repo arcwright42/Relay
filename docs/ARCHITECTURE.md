@@ -74,9 +74,9 @@ ACP 定义客户端与 Agent 的双向请求和事件通知。Relay 实现客户
 | OpenCode | opencode acp | 使用其 ACP 子进程入口 |
 | 其他 Agent | 兼容的 ACP 入口 | 按协商能力启用功能 |
 
-当前仅实现 Codex，并完成托管安装、模型发现和真实消息验证；其余为未来路径。[Codex ACP](https://github.com/agentclientprotocol/codex-acp)、[Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp)、[OpenCode ACP](https://opencode.ai/docs/acp/)
+当前仅实现 Codex，使用本地安装，已完成模型发现和真实消息验证；其余为未来路径。[Codex ACP](https://github.com/agentclientprotocol/codex-acp)、[Claude ACP](https://github.com/agentclientprotocol/claude-agent-acp)、[OpenCode ACP](https://opencode.ai/docs/acp/)
 
-Codex 采用内置目录、按需托管安装及可选本地可执行文件。连接链路为 `GPUI → AgentService → relay-runtime → relay-acp → stdio → codex-acp → Codex`。Rust ACP SDK 固定 2.2.0，协议先协商 v1。上游适配器使用 JavaScript，Node 与适配器是单独管理的外部组件；Relay 的 UI、领域、安装器、状态机和协议客户端均为 Rust。
+Codex 采用内置入口与本地可执行文件发现，Relay 不安装或升级 Harness 本体。连接链路为 `GPUI → AgentService → relay-runtime → relay-acp → stdio → codex-acp → Codex`。Rust ACP SDK 固定 2.2.0，协议先协商 v1。上游适配器使用 JavaScript，Node 与适配器是单独管理的外部组件；npm 安装省略可选平台 CLI 二进制，启动时始终指定用户本地 CODEX_PATH；Relay 的 UI、领域、安装器、状态机和协议客户端均为 Rust。
 
 每个项目独立维护连接、工作目录、原生会话引用、可见消息与已确认的配置偏好。模型及其他选择项来自 `configOptions`；请求确认前禁止重复切换，不猜测模型 ID。后台工作线程负责安装、协议 I/O 和持久化，UI 只订阅快照修订。连接 generation 防止旧进程的迟到事件改变新会话。项目历史恢复与原生 session/load 分开处理，抑制原生历史重播带来的消息重复。详见 [Codex 接入](CODEX.md)。
 
@@ -181,4 +181,4 @@ macOS 候选路径为辅助功能 API 获取选区和窗口信息；目标应用
 | 5 | 网页划词、快捷面板和项目主窗口的同一工作链路 |
 | 6 | 按键语音、朗读、截图问答，再扩展唤醒与持续视觉 |
 
-当前已完成工作台、Codex ACP 主对话、可见历史恢复、真实项目与文字资料、薄版项目记忆、Jev 项目归属、上下文快照/增量和诊断，以及快捷面板的选区/网页上下文基础实现；任务线程、会话导入、文件导入、检索、委派和语音视觉按上述目标继续实现。
+当前已完成工作台、Codex ACP 主对话、可见历史恢复、真实项目与文字资料、薄版项目记忆、Jev 项目归属、上下文快照/增量和诊断，以及快捷面板的选区/网页上下文基础实现；本地 Codex 会话中心按 30 分钟归档外部对话并支持项目归属，详见 [本地会话中心](CLIENT-SESSIONS.md)。任务线程、其他 Client 导入、原生续聊、文件导入、检索、委派和语音视觉按上述目标继续实现。
