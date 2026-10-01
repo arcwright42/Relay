@@ -69,14 +69,17 @@ cp .env.example .env
 OPENROUTER_API_KEY=你的_OpenRouter_API_key
 ```
 
-Relay 启动时自动读取当前工作目录的 `.env`，该文件已被 Git 忽略。配置优先级为进程环境变量 → `.env` → 钥匙串；环境密钥不写入钥匙串或项目文件，也不会由 `.env` 加载器注入 Agent 子进程环境。修改环境配置后重启 Relay。通过 Finder 启动的应用通常没有终端环境或仓库工作目录，可直接在 **设置 → 项目自动归属 → OpenRouter** 保存密钥。
+Relay 启动时自动读取当前工作目录的 `.env`，该文件已被 Git 忽略。配置优先级为进程环境变量 → `.env` → 钥匙串；环境密钥不写入钥匙串或项目文件，也不会由 `.env` 加载器注入 Agent 子进程环境。修改环境配置后重启 Relay。`cargo xtask start` 通过 macOS Launch Services 启动，并将工作目录设为仓库根目录；通过 Finder 启动时可直接在 **设置 → 项目自动归属 → OpenRouter** 保存密钥。
 
 ```sh
-cargo run --locked
 cargo xtask verify
 cargo xtask bundle
-open dist/Relay.app
+cargo xtask start
 ```
+
+`start` 复用已运行的 Relay，更新构建后先退出旧进程再启动；启动日志写入 Cargo target 目录的 `relay-launch.log`。选区验收使用这条启动路径，让 macOS 将辅助功能权限归属于 Relay 自身。`cargo run --locked` 仍可用于代码调试，但直接从终端或其他应用启动二进制可能继承父进程的权限归属。
+
+`bundle` 签名优先级为 `RELAY_SIGNING_IDENTITY` → 仓库根目录的 `.relay-signing-identity` → 已有 `dist/Relay.app` 的签名身份；均未配置时才使用 ad-hoc，并提示重编译可能导致辅助功能授权失效。`.relay-signing-identity` 保存证书名称或 SHA-1，已被 Git 忽略。已有开发者签名会自动沿用，签名失败不会退回 ad-hoc；也可显式设置 `RELAY_SIGNING_IDENTITY=-`。首次从 ad-hoc 切换到稳定证书仍可能需要重新授权。
 
 真实 Jev 联调使用隔离的临时项目，可运行 `cargo run -p relay-runtime --example jev_probe --locked`；添加 `-- --execute --model gpt-6.1-sol` 可进一步验证已安装 Codex 的项目上下文交付。详细结果和客户端兼容性见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
 

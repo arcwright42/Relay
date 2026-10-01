@@ -12,7 +12,7 @@
 | `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
 | `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`dotenvy`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
-| `xtask` | 包边界检查、质量检查、图标生成与本地 macOS 打包 | `serde_json` |
+| `xtask` | 包边界检查、质量检查、图标生成、本地 macOS 打包与 Launch Services 启动 | `serde_json` |
 
 `relay-ui` 内按工作台状态、导航、对话输入、辅助页面和开发工具组织模块。`devtools` feature 默认从应用入口开启，统一启用 GPUI 检查器与 Relay 右键入口；关闭默认 feature 可以剔除这些开发入口。
 
@@ -66,14 +66,17 @@ cargo xtask verify
 Moli 是独立的按需网页采集组件，固定 1.1.10。`moli_installer` 使用官方 macOS Apple Silicon / Intel 归档的固定 SHA-256，复用校验、临时目录与原子激活流程；不执行在线安装脚本。`webfetch` 将 stdout 写入仅当前用户可读的临时文件，限制正文与总输出大小，超时/退出结束进程组并清理。许可证随原发布归档保留；`RELAY_MOLI_PATH` 是显式本地覆盖入口。
 
 ```sh
-cargo run --locked
 cargo xtask icon
 cargo xtask bundle
-open dist/Relay.app
+cargo xtask start
 ```
 
 图标以 `assets/relay-icon.svg` 为应用图标源文件，`assets/relay-mark.svg` 用于单色界面标志。`icon` 使用 macOS 系统工具生成 PNG 和 ICNS；调整矢量稿后重新生成并提交这些资源。
 
-`bundle` 默认使用开发构建，`bundle --release` 使用发布优化，均生成 `dist/Relay.app` 并做本地 ad hoc 签名。可执行文件通过临时文件和 rename 替换，避免覆盖正在运行进程所映射的文件；已打开的窗口继续使用旧构建，新构建下次启动生效。对外分发所需的开发者签名、notarization 和更新机制尚未接入。构建产物、编辑器配置与日志不进入 Git。
+`bundle` 默认使用开发构建，`bundle --release` 使用发布优化，均生成 `dist/Relay.app`。在覆盖可执行文件之前解析签名身份：优先使用 `RELAY_SIGNING_IDENTITY`，其次使用被 Git 忽略的 `.relay-signing-identity`，再沿用已有包的签名证书；新环境未配置证书时才采用 ad-hoc 并发出授权失效提示。身份配置为空、旧签名无法识别或签名失败时直接报错，不静默降级；签名后执行 `codesign --verify --strict`。
+
+可执行文件通过临时文件和 rename 替换，避免覆盖正在运行进程所映射的文件；已打开的窗口继续使用旧构建，新构建下次启动生效。`start` 通过 Launch Services 打开应用，复用已有实例，不终止正在进行的对话。仅传递非密钥的 `RELAY_WORKING_DIRECTORY` 以恢复仓库工作目录和 `.env` 读取；stdout/stderr 写到 Cargo target 下的 `relay-launch.log`。直接执行二进制的 `cargo run --locked` 适合代码调试，原生辅助功能验收应使用 `start`。
+
+对外分发所需的 notarization 和更新机制尚未接入。构建产物、编辑器配置、本机签名身份与日志不进入 Git。
 
 本地 Client 会话归档属于 relay-runtime，UI 通过 relay-core::sessions 的修订快照和命令访问。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [本地会话中心](CLIENT-SESSIONS.md)。

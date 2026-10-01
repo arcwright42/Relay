@@ -219,7 +219,25 @@ fn open_window(
     }
 }
 
+fn configure_working_directory() -> std::io::Result<()> {
+    if let Some(directory) = std::env::var_os("RELAY_WORKING_DIRECTORY") {
+        let directory = std::path::Path::new(&directory);
+        if !directory.is_absolute() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "RELAY_WORKING_DIRECTORY must be an absolute directory path",
+            ));
+        }
+        std::env::set_current_dir(directory)?;
+    }
+    Ok(())
+}
+
 fn main() {
+    if let Err(error) = configure_working_directory() {
+        eprintln!("Could not set Relay working directory: {error}");
+        std::process::exit(2);
+    }
     let directory = AgentRuntime::default_directory();
     let settings = Arc::new(SettingsStore::new(directory.clone()));
     let projects = Arc::new(ProjectStore::new(directory.clone()));
