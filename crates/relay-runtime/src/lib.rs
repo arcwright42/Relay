@@ -3,6 +3,7 @@ mod context;
 #[cfg(all(test, feature = "test-support"))]
 mod delivery_tests;
 mod diagnostics;
+mod files;
 mod installer;
 mod metrics;
 mod moli_installer;
@@ -14,6 +15,7 @@ mod store;
 mod webfetch;
 pub use webfetch::MoliFetcher;
 
+pub use files::FileStore;
 pub use projects::ProjectStore;
 pub use routing::JevRouter;
 pub use sessions::ClientSessionStore;
@@ -357,11 +359,13 @@ impl AgentRuntime {
                 source: local_codex.map_or(AgentSource::Auto, AgentSource::Local),
                 installed,
                 local_installations: local_installations.clone(),
-                working_directory: saved.cwd.unwrap_or_else(|| {
-                    root.join("projects")
-                        .join(id.0.to_string())
-                        .join("workspace")
-                }),
+                working_directory: saved
+                    .cwd
+                    .filter(|cwd| {
+                        let legacy = root.join(format!("projects/{}/workspace", id.0));
+                        *cwd != legacy && legacy.canonicalize().ok().as_ref() != Some(cwd)
+                    })
+                    .unwrap_or_else(|| files::workspace_directory(&root)),
                 messages: saved
                     .messages
                     .into_iter()
@@ -423,10 +427,7 @@ impl AgentRuntime {
                 storage_version: 2,
                 stored_identity: store::SavedIdentity::default(),
                 view: AgentSnapshot {
-                    working_directory: self
-                        .shared
-                        .root
-                        .join(format!("projects/{}/workspace", id.0)),
+                    working_directory: files::workspace_directory(&self.shared.root),
                     ..Default::default()
                 },
                 generation: 0,
@@ -827,7 +828,8 @@ impl AgentService for AgentRuntime {
                     return Ok(());
                 }
                 let snapshot =
-                    context::Snapshot::from_project(definition.as_ref().expect("send project"));
+                    context::Snapshot::from_project(definition.as_ref().expect("send project"))
+                        .with_files_directory(files::workspace_directory(&self.shared.root));
                 let delivery = snapshot.delivery(if state.context_checkpoint.uncertain {
                     None
                 } else {

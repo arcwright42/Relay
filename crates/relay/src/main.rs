@@ -2,11 +2,12 @@ use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
 use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
 use relay_runtime::{
-    AgentRuntime, ClientSessionStore, JevRouter, MoliFetcher, ProjectStore, SettingsStore,
+    AgentRuntime, ClientSessionStore, FileStore, JevRouter, MoliFetcher, ProjectStore,
+    SettingsStore,
 };
 use relay_ui::{
     FocusSearch, OpenAgentSettings, OpenProject, OpenQuick, OpenWorkspace, Quit,
-    RequestAccessibility, ResizeQuick, SendMessage, Workbench, apply_language,
+    RequestAccessibility, ResizeQuick, SaveFile, SendMessage, Workbench, apply_language,
 };
 use std::sync::Arc;
 
@@ -18,6 +19,7 @@ struct Services {
     routing: Arc<JevRouter>,
     fetcher: Arc<MoliFetcher>,
     client_sessions: Arc<ClientSessionStore>,
+    files: Arc<FileStore>,
 }
 struct Desktop {
     services: Services,
@@ -137,6 +139,7 @@ fn open_window(
                     cx,
                 );
                 view.set_client_session_service(services.client_sessions, cx);
+                view.set_file_service(services.files, cx);
                 if quick {
                     view.capture(selection, services.fetcher, window, cx);
                 }
@@ -243,6 +246,7 @@ fn main() {
     let projects = Arc::new(ProjectStore::new(directory.clone()));
     let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
     let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
+    let files = Arc::new(FileStore::new(directory.clone()));
     let client_sessions = Arc::new(ClientSessionStore::new(
         directory.clone(),
         projects.clone(),
@@ -255,13 +259,14 @@ fn main() {
         routing,
         fetcher: Arc::new(MoliFetcher::new(&directory)),
         client_sessions: client_sessions.clone(),
+        files,
     };
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     application.on_reopen(|cx| open_workspace(None, cx));
     application.run(move |cx| {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Light, None, cx);
-        Theme::global_mut(cx).font_size = px(14.);
+        Theme::global_mut(cx).font_size = px(16.);
         apply_language(settings.snapshot().language, cx);
         let shortcut = relay_platform::Shortcut::register();
         let shutdown_fetcher = services.fetcher.clone();
@@ -276,6 +281,7 @@ fn main() {
             KeyBinding::new("cmd-q", Quit, None),
             KeyBinding::new("cmd-k", FocusSearch, None),
             KeyBinding::new("cmd-enter", SendMessage, None),
+            KeyBinding::new("cmd-s", SaveFile, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_action(|_: &OpenWorkspace, cx| open_workspace(None, cx));

@@ -154,7 +154,7 @@ impl Render for ProjectEditor {
         });
         column()
             .gap(px(13.))
-            .child(muted(self.language.text(Text::Name)).text_size(px(12.)))
+            .child(muted(self.language.text(Text::Name)).text_size(px(13.)))
             .child(
                 Input::new(&self.name)
                     .id("project-editor-name")
@@ -163,7 +163,7 @@ impl Render for ProjectEditor {
                     .context_menu(crate::locale::input_menu),
             )
             .when(project, |view| {
-                view.child(muted(self.language.text(Text::Description)).text_size(px(12.)))
+                view.child(muted(self.language.text(Text::Description)).text_size(px(13.)))
                     .child(
                         Input::new(&self.description)
                             .id("project-editor-description")
@@ -172,7 +172,7 @@ impl Render for ProjectEditor {
                             .context_menu(crate::locale::input_menu),
                     )
             })
-            .child(muted(body_label).text_size(px(12.)))
+            .child(muted(body_label).text_size(px(13.)))
             .child(
                 column().id("project-editor-body").test_support().child(
                     Textarea::new(&self.body)
@@ -188,7 +188,7 @@ impl Render for ProjectEditor {
                 } else {
                     Text::NoteHint
                 }))
-                .text_size(px(12.)),
+                .text_size(px(13.)),
             )
             .when(!project, |view| {
                 view.child(
@@ -220,7 +220,7 @@ impl Render for ProjectEditor {
                                 .text_color(rgb(0x9a542a))
                                 .child(self.language.text(Text::ProjectSaveError)),
                         )
-                        .child(muted(error.clone()).text_size(px(12.))),
+                        .child(muted(error.clone()).text_size(px(13.))),
                 )
             })
             .child(

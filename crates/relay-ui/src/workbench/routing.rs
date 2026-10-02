@@ -324,7 +324,7 @@ impl Workbench {
                                             .size(px(15.))
                                             .text_color(rgb(MUTED)),
                                     )
-                                    .child(muted(self.text(status)).text_size(px(12.))),
+                                    .child(muted(self.text(status)).text_size(px(13.))),
                             )
                             .child(
                                 row()
@@ -488,7 +488,7 @@ impl Workbench {
                         } else {
                             Text::RoutingUnconfigured
                         }))
-                        .text_size(px(12.)),
+                        .text_size(px(13.)),
                     ),
             )
             .child(row().gap(px(8.)).children([RoutingProvider::OpenRouter, RoutingProvider::Vercel, RoutingProvider::TypeSafe].into_iter().map(|provider| {
@@ -502,7 +502,7 @@ impl Workbench {
                         cx.notify();
                     }))
             })))
-            .when(external, |view| view.child(muted(self.text(Text::RoutingExternalCredential)).text_size(px(12.))))
+            .when(external, |view| view.child(muted(self.text(Text::RoutingExternalCredential)).text_size(px(13.))))
             .child(
                 Input::new(&self.routing.key)
                     .id("jev-api-key")
@@ -546,7 +546,7 @@ impl Workbench {
                         })))),
             )
             .when_some(self.routing.key_error.or(snapshot.error), |view, error| {
-                view.child(muted(self.text(routing_error_text(error))).text_size(px(12.)))
+                view.child(muted(self.text(routing_error_text(error))).text_size(px(13.)))
             })
     }
 }

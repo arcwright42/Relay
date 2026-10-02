@@ -15,7 +15,7 @@ impl Workbench {
                     row()
                         .justify_between()
                         .mb(px(8.))
-                        .child(muted(self.text(Text::RoutingWaiting)).text_size(px(12.)))
+                        .child(muted(self.text(Text::RoutingWaiting)).text_size(px(13.)))
                         .child(
                             Button::new("cancel-routed-send")
                                 .ghost()
@@ -94,6 +94,7 @@ impl Workbench {
 
     pub(super) fn conversation(&self, compact: bool, cx: &mut Context<Self>) -> Div {
         let state = &self.agent_states[self.selected_project];
+        let weak = cx.entity().downgrade();
         column()
             .flex_1()
             .min_h_0()
@@ -124,12 +125,12 @@ impl Workbench {
                                     .when(user, |view| view.items_end())
                                     .child(
                                         muted(if user { self.text(Text::You) } else { "Codex" })
-                                            .text_size(px(11.)),
+                                            .text_size(px(13.)),
                                     )
                                     .children(message.tools.iter().map(|tool| {
                                         row()
                                             .gap(px(8.))
-                                            .text_size(px(12.))
+                                            .text_size(px(13.))
                                             .text_color(rgb(MUTED))
                                             .child(
                                                 icon(if tool.status == "completed" {
@@ -162,7 +163,19 @@ impl Workbench {
                                                         ("chat-message", message.id),
                                                         message.text.clone(),
                                                     )
-                                                    .selectable(true),
+                                                    .selectable(true)
+                                                    .on_link_click({
+                                                        let weak = weak.clone();
+                                                        move |link, _, window, cx| {
+                                                            let _ = weak.update(cx, |this, cx| {
+                                                                this.open_file_link(
+                                                                    link.to_string(),
+                                                                    window,
+                                                                    cx,
+                                                                )
+                                                            });
+                                                        }
+                                                    }),
                                                 ),
                                         )
                                     })
@@ -198,7 +211,7 @@ impl Workbench {
                                                     },
                                                 ),
                                             )
-                                            .text_size(px(11.)),
+                                            .text_size(px(13.)),
                                         )
                                     })
                                     .when(message.metrics.is_some(), |view| {
@@ -249,7 +262,7 @@ impl Workbench {
             .px(px(12.))
             .rounded(px(17.))
             .text_color(rgb(0x73737a))
-            .text_size(px(12.))
+            .text_size(px(13.))
             .on_click(cx.listener(move |this, _, window, cx| this.use_prompt(prompt, window, cx)))
     }
 

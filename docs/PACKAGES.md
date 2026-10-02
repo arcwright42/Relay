@@ -7,9 +7,9 @@
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`relay-platform`、`gpui-kit` |
-| `relay-ui` | 工作台、项目与文字资料编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
+| `relay-ui` | 工作台、项目与文字资料编辑、独立文件 Tab 及预览编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
 | `relay-platform` | macOS 全局快捷键、辅助功能选区采集与原生浮窗定位 | `relay-core`、`async-channel`、`objc2`、`objc2-app-kit`、`objc2-foundation` |
-| `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / SettingsService / RoutingService 接口 | 无 |
+| `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / FileService / SettingsService / RoutingService 接口 | 无 |
 | `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`dotenvy`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
 | `xtask` | 包边界检查、质量检查、图标生成、本地 macOS 打包与 Launch Services 启动 | `serde_json` |
@@ -19,6 +19,8 @@
 运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口注入 AgentService、ProjectService 和 SettingsService；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。项目预览资料已移除。
 
 当前项目存储放在 `relay-runtime::projects`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ProjectService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。macOS 能力已拆入 `relay-platform`；后续数据库等能力在需要独立边界时再拆分，接入前同步允许依赖图。
+
+个人文件工作区复用现有包：`relay-core::files` 定义文件列表、内容、位置、命令与 `FileService`，`relay-runtime::files` 执行后台目录读取、导入和冲突检查保存，`relay-ui::workbench::files` 提供独立文件 Tab。应用入口装配 FileStore，使用应用级统一个人目录，不依赖 ProjectService 或 AgentService。各会话的 Agent 默认使用同一目录。PDF / Office 首页预览由 macOS Quick Look 在后台生成，不新增直接依赖或数据库。
 
 薄版项目记忆复用这些边界：领域定义 MemoryItem，projects 保存事实/决策及回复来源，context 生成记忆快照和增量，routing 只读取少量标题。记忆由主 Agent 维护，UI 已移除手动记忆管理及回复转存入口，Agent 写入待接入。没有新增依赖、workspace crate、数据库或外部服务。
 

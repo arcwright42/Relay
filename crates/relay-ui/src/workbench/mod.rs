@@ -1,6 +1,8 @@
 mod agents;
 mod conversation;
 mod diagnostics;
+mod files;
+pub use files::SaveFile;
 mod navigation;
 mod pages;
 mod projects;
@@ -36,7 +38,7 @@ use std::{sync::Arc, time::Duration};
 actions!(relay, [FocusSearch, SendMessage]);
 
 const INK: u32 = 0x202124;
-const MUTED: u32 = 0x8b8b91;
+const MUTED: u32 = 0x77777f;
 const SIDEBAR: u32 = 0xf7f7f8;
 const LINE: u32 = 0xe8e8eb;
 const SURFACE: u32 = 0xffffff;
@@ -118,6 +120,7 @@ pub struct Workbench {
     routing_service: Arc<dyn RoutingService>,
     routing: routing::RoutingUi,
     page: Page,
+    files: Entity<files::FilesView>,
     selected_project: usize,
     projects: Vec<Project>,
     drafts: Vec<Entity<TextareaState>>,
@@ -156,6 +159,7 @@ impl Workbench {
             routing::RoutingUi::new(language, routing_service.snapshot().provider, window, cx);
         let catalog = project_service.snapshot();
         let projects = catalog.projects;
+        let files = cx.new(|cx| files::FilesView::new(language, window, cx));
         let drafts: Vec<_> = projects
             .iter()
             .map(|_| {
@@ -251,6 +255,7 @@ impl Workbench {
             routing_service,
             routing,
             page: Page::Home,
+            files,
             selected_project: 0,
             agent_errors: vec![None; projects.len()],
             projects,
@@ -283,6 +288,8 @@ impl Workbench {
         self.settings_service.set_language(language);
         self.settings_snapshot = self.settings_service.snapshot();
         crate::apply_language(language, cx);
+        self.files
+            .update(cx, |files, cx| files.set_language(language, window, cx));
         // User-owned project names, notes and protocol inputs never change with UI language.
         self.search.update(cx, |search, cx| {
             search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
@@ -312,6 +319,9 @@ impl Workbench {
             self.selected_project = index;
         }
         self.page = page;
+        self.files.update(cx, |files, cx| {
+            files.set_visible(page == Page::Files, window, cx)
+        });
         if window.root::<Root>().flatten().is_none() || !window.has_active_dialog(cx) {
             window.focus(&self.focus, cx);
         }
@@ -401,6 +411,7 @@ impl Render for Workbench {
                 Page::Agents => self.home(cx),
                 Page::Settings => self.settings(cx),
                 Page::Sessions => self.client_sessions(cx),
+                Page::Files => column().flex_1().min_h_0().child(self.files.clone()),
                 Page::Inbox => column()
                     .flex_1()
                     .items_center()
@@ -428,7 +439,7 @@ impl Render for Workbench {
             .overflow_hidden()
             .items_stretch()
             .font_family(".SystemUIFont")
-            .text_size(px(14.))
+            .text_size(px(16.))
             .text_color(rgb(INK))
             .when(self.quick.is_none(), |view| view.bg(rgb(SURFACE)))
             .on_action(cx.listener(Self::focus_search))

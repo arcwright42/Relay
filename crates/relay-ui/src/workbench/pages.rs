@@ -36,14 +36,14 @@ impl Workbench {
                                 .child(
                                     row()
                                         .justify_between()
-                                        .child(muted(self.text(Text::Projects)).text_size(px(12.)))
+                                        .child(muted(self.text(Text::Projects)).text_size(px(13.)))
                                         .child(
                                             Button::new("home-new-project")
                                                 .ghost()
                                                 .small()
                                                 .icon(icon(IconName::Plus).size(px(14.)))
                                                 .label(self.text(Text::NewProject))
-                                                .text_size(px(12.))
+                                                .text_size(px(13.))
                                                 .disabled(self.project_error.is_some())
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.edit_project(None, window, cx)
@@ -155,13 +155,13 @@ impl Workbench {
                                 ),
                         )
                         .when(self.settings_snapshot.saving, |view| {
-                            view.child(muted(self.text(Text::SavingSettings)).text_size(px(12.)))
+                            view.child(muted(self.text(Text::SavingSettings)).text_size(px(13.)))
                         })
                         .when_some(self.settings_snapshot.error.as_ref(), |view, error| {
                             view.child(
                                 column()
                                     .gap(px(8.))
-                                    .text_size(px(12.))
+                                    .text_size(px(13.))
                                     .child(
                                         div()
                                             .text_color(rgb(0x9a542a))
@@ -220,7 +220,7 @@ impl Workbench {
                             .child(title.to_owned()),
                     )
                     .when(!detail.is_empty(), |view| {
-                        view.child(muted(detail).text_size(px(12.)))
+                        view.child(muted(detail).text_size(px(13.)))
                     }),
             )
             .child(muted(value).text_size(px(13.)))

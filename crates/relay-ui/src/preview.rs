@@ -4,6 +4,7 @@ pub enum Page {
     Home,
     Inbox,
     Sessions,
+    Files,
     Project(usize),
     Agents,
     Settings,
