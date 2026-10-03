@@ -17,17 +17,17 @@ impl Workbench {
                 row()
                     .w_full()
                     .gap(px(10.))
-                    .text_size(px(13.))
-                    .child(icon(glyph).size(px(17.)))
+                    .text_size(px(15.))
+                    .child(icon(glyph).size(px(20.)))
                     .child(div().flex_1().min_w_0().truncate().child(name)),
             )
             .w_full()
-            .h(px(36.))
+            .h(px(40.))
             .flex_shrink_0()
             .justify_start()
             .px(px(10.))
             .rounded(px(8.))
-            .text_size(px(13.))
+            .text_size(px(15.))
             .when(self.page == page, |this| this.bg(rgb(0xeaeaec)))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if page == Page::Sessions {
@@ -46,7 +46,7 @@ impl Workbench {
             .filter(|(_, project)| project.name.to_lowercase().contains(&query))
             .collect();
         column()
-            .w(px(if compact { 212. } else { 228. }))
+            .w(px(if compact { 224. } else { 240. }))
             .h_full()
             .flex_shrink_0()
             .bg(rgb(SIDEBAR))
@@ -79,14 +79,14 @@ impl Workbench {
                         Input::new(&self.search)
                             .appearance(false)
                             .bordered(false)
-                            .h(px(33.))
-                            .text_size(px(13.))
+                            .h(px(36.))
+                            .text_size(px(15.))
                             .prefix(
                                 icon(IconName::Search)
                                     .size(px(15.))
                                     .text_color(rgb(0x6c6c72)),
                             )
-                            .suffix(muted("⌘K").text_size(px(12.)))
+                            .suffix(muted("⌘K").text_size(px(13.)))
                             .aria_label(self.text(Text::SearchProjects))
                             .context_menu(crate::locale::input_menu),
                     ),
@@ -114,6 +114,13 @@ impl Workbench {
                         IconName::FileText,
                         Page::Sessions,
                         cx,
+                    ))
+                    .child(self.nav_button(
+                        "files-tab",
+                        self.text(Text::Files),
+                        IconName::FolderClosed,
+                        Page::Files,
+                        cx,
                     )),
             )
             .child(
@@ -122,7 +129,7 @@ impl Workbench {
                     .px(px(10.))
                     .mt(px(22.))
                     .mb(px(5.))
-                    .child(muted(self.text(Text::Projects)).text_size(px(12.)))
+                    .child(muted(self.text(Text::Projects)).text_size(px(13.)))
                     .child(
                         icon_button(
                             "create-project",
@@ -157,7 +164,7 @@ impl Workbench {
                             muted(self.text(Text::NoProjects))
                                 .px(px(12.))
                                 .py(px(10.))
-                                .text_size(px(12.)),
+                                .text_size(px(13.)),
                         )
                     }),
             )
@@ -189,6 +196,7 @@ impl Workbench {
             Page::Home => "",
             Page::Inbox => self.text(Text::Inbox),
             Page::Sessions => self.text(Text::ClientSessions),
+            Page::Files => self.text(Text::Files),
             Page::Agents => self.text(Text::Agents),
             Page::Settings => self.text(Text::Settings),
         };
@@ -203,7 +211,7 @@ impl Workbench {
                     .min_w_0()
                     .truncate()
                     .font_weight(FontWeight::MEDIUM)
-                    .text_size(px(14.))
+                    .text_size(px(18.))
                     .child(title.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
             )

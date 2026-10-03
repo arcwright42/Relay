@@ -108,17 +108,17 @@ impl Workbench {
                                     row()
                                         .gap(px(18.))
                                         .justify_between()
-                                        .child(muted(language.text(*label)).text_size(px(12.)))
+                                        .child(muted(language.text(*label)).text_size(px(13.)))
                                         .child(
                                             div()
                                                 .max_w(px(280.))
-                                                .text_size(px(12.))
+                                                .text_size(px(13.))
                                                 .child(value.clone()),
                                         )
                                 })),
                         )
-                        .child(muted(language.text(Text::MetricsDetail)).text_size(px(12.)))
-                        .child(muted(language.text(Text::UsageScopeDetail)).text_size(px(12.))),
+                        .child(muted(language.text(Text::MetricsDetail)).text_size(px(13.)))
+                        .child(muted(language.text(Text::UsageScopeDetail)).text_size(px(13.))),
                 )
         });
     }

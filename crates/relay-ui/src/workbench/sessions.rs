@@ -212,8 +212,8 @@ impl Workbench {
                             .flex_1()
                             .min_w_0()
                             .gap(px(5.))
-                            .child(muted(self.text(Text::ClientSessionsHint)).text_size(px(12.)))
-                            .child(muted(stats).text_size(px(11.))),
+                            .child(muted(self.text(Text::ClientSessionsHint)).text_size(px(13.)))
+                            .child(muted(stats).text_size(px(13.))),
                     )
                     .child(self.client_project_picker(false, cx))
                     .child(
@@ -237,14 +237,14 @@ impl Workbench {
                     .context_menu(crate::locale::input_menu),
             )
             .when(sessions.len() > 200, |v| {
-                v.child(muted(self.text(Text::ClientSessionsListLimit)).text_size(px(11.)))
+                v.child(muted(self.text(Text::ClientSessionsListLimit)).text_size(px(13.)))
             })
             .when_some(
                 self.client_session_error.as_ref().or(state.error.as_ref()),
                 |view, error| {
                     view.child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(px(13.))
                             .text_color(rgb(0x9a542a))
                             .child(error.clone()),
                     )
@@ -305,13 +305,13 @@ impl Workbench {
                                                 "{} · {project} · {}",
                                                 session.client, session.message_count
                                             ))
-                                            .text_size(px(11.)),
+                                            .text_size(px(13.)),
                                         )
                                         .child(
                                             muted(session.working_directory.display().to_string())
                                                 .w_full()
                                                 .truncate()
-                                                .text_size(px(10.)),
+                                                .text_size(px(13.)),
                                         ),
                                 )
                                 .on_click(cx.listener(
@@ -364,12 +364,12 @@ impl Workbench {
                     )
                     .child(self.client_project_picker(true, cx)),
             )
-            .child(muted(session.source.display().to_string()).text_size(px(10.)))
+            .child(muted(session.source.display().to_string()).text_size(px(13.)))
             .when(!session.available, |v| {
-                v.child(muted(self.text(Text::ClientSessionsMissing)).text_size(px(11.)))
+                v.child(muted(self.text(Text::ClientSessionsMissing)).text_size(px(13.)))
             })
             .when(detail.messages.len() > 80, |v| {
-                v.child(muted(self.text(Text::ClientSessionsRecent)).text_size(px(11.)))
+                v.child(muted(self.text(Text::ClientSessionsRecent)).text_size(px(13.)))
             })
             .child(
                 column()
@@ -406,7 +406,7 @@ impl Workbench {
                                                     "Codex"
                                                 })
                                                 .flex_1()
-                                                .text_size(px(11.)),
+                                                .text_size(px(13.)),
                                             )
                                             .child(
                                                 Button::new(("copy-client-message", message.id))
@@ -429,7 +429,7 @@ impl Workbench {
                                     .when(preview.len() < message.text.len(), |v| {
                                         v.child(
                                             muted(self.text(Text::ClientSessionsTruncated))
-                                                .text_size(px(11.)),
+                                                .text_size(px(13.)),
                                         )
                                     })
                             }),

@@ -6,6 +6,55 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct TestAgents(Mutex<Vec<AgentCommand>>);
 
+#[gpui_kit::test]
+fn files_is_a_standalone_tab_and_preserves_the_conversation_draft(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, test::TestWindowExt};
+    cx.update(gpui_kit::init);
+    let mut workbench = None;
+    let window = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            Workbench::new(
+                Arc::new(TestAgents::default()),
+                Arc::new(TestSettings::default()),
+                Arc::new(TestProjects::default()),
+                Arc::new(TestRouting),
+                window,
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| {
+            view.navigate(Page::Project(0), window, cx);
+            view.drafts[0].update(cx, |draft, cx| draft.set_value("继续这个项目", window, cx));
+        });
+        workbench = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("files-tab", cx);
+    })
+    .unwrap();
+    let view = workbench.unwrap();
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("files-workspace").is_some());
+        assert!(window.try_find("send").is_none());
+        view.update(cx, |view, cx| {
+            assert!(view.page == Page::Files);
+            assert_eq!(view.drafts[0].read(cx).value().as_ref(), "继续这个项目");
+            assert_eq!(
+                view.agent_states[0].messages[0].text,
+                "Original answer 原始内容"
+            );
+            view.navigate(Page::Project(0), window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("files-workspace").is_none());
+        assert!(window.try_find("stop-response").is_some());
+    })
+    .unwrap();
+}
+
 impl AgentService for TestAgents {
     fn revision(&self) -> u64 {
         0

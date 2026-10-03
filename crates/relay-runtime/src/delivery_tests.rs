@@ -97,6 +97,68 @@ macro_rules! prompt {
 }
 
 #[test]
+fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent() {
+    use relay_core::files::FileService;
+    let fixture = Fixture::new();
+    let custom = fixture.root.join("code-repository");
+    std::fs::create_dir_all(&custom).unwrap();
+    fixture
+        .runtime
+        .dispatch(
+            ProjectId(1),
+            AgentCommand::SetWorkingDirectory(custom.clone()),
+        )
+        .unwrap();
+    let files = FileStore::new(fixture.root.clone());
+    let personal = files.list(PathBuf::new()).unwrap().workspace;
+    let (connection, received) = relay_acp::test_connection();
+    fixture
+        .runtime
+        .connections
+        .lock()
+        .unwrap()
+        .insert(ProjectId(1), connection);
+    // Changing folders advances the connection generation.
+    let generation = fixture.runtime.shared.projects.lock().unwrap()[&ProjectId(1)].generation;
+    fixture.runtime.shared.event(
+        ProjectId(1),
+        generation,
+        Event::Ready {
+            session_id: "personal-files-session".into(),
+            configs: vec![],
+            resumed: false,
+        },
+    );
+    let context = prompt!(fixture.runtime, received, "Create a report").unwrap();
+    let payload: serde_json::Value = serde_json::from_str(context.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        payload["changes"]["files_directory"],
+        personal.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        fixture.runtime.snapshot(ProjectId(1)).working_directory,
+        custom.canonicalize().unwrap()
+    );
+    fixture.runtime.shared.event(
+        ProjectId(1),
+        generation,
+        Event::TurnEnded {
+            outcome: TurnOutcome::Complete,
+            usage: None,
+        },
+    );
+    assert!(prompt!(fixture.runtime, received, "Continue").is_none());
+    fixture.runtime.shared.event(
+        ProjectId(1),
+        generation,
+        Event::TurnEnded {
+            outcome: TurnOutcome::Complete,
+            usage: None,
+        },
+    );
+}
+
+#[test]
 fn memory_updates_removals_and_unconfirmed_changes_reach_the_next_acp_turn() {
     let fixture = Fixture::new();
     fixture.memory("Use the existing project store");

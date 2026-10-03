@@ -476,7 +476,7 @@ impl Workbench {
                         .w(px(270.))
                         .p(px(10.))
                         .gap(px(10.))
-                        .child(muted("项目").text_size(px(11.)))
+                        .child(muted("项目").text_size(px(13.)))
                         .children(this.projects.iter().enumerate().map(|(index, project)| {
                             Button::new(("quick-result-project", index))
                                 .ghost()
@@ -521,7 +521,7 @@ impl Workbench {
                                             .skip(quick.message_start)
                                             .flat_map(|message| &message.tools)
                                             .map(|tool| {
-                                                muted(tool.title.clone()).text_size(px(11.))
+                                                muted(tool.title.clone()).text_size(px(13.))
                                             }),
                                     ),
                             )
@@ -691,7 +691,7 @@ impl Workbench {
                                     .when(quick.selection.text.is_empty(), |view| {
                                         view.child(
                                             muted(self.text(Text::QuickNoSelection))
-                                                .text_size(px(12.)),
+                                                .text_size(px(13.)),
                                         )
                                     })
                                     .child(
@@ -701,7 +701,7 @@ impl Workbench {
                                             FetchState::Ready(_) => Text::QuickFetched,
                                             FetchState::Failed(_) => Text::QuickFetchFailed,
                                         }))
-                                        .text_size(px(11.)),
+                                        .text_size(px(13.)),
                                     )
                                     .when_some(quick.notice.clone(), |view, text| {
                                         view.child(muted(text))
@@ -730,13 +730,13 @@ impl Workbench {
             context = context.child(
                 row()
                     .gap(px(8.))
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .child(muted("自动检测 →"))
                     .child(self.translation_picker(cx)),
             );
         }
         if quick.selection.text.is_empty() {
-            context = context.child(muted("未读取到选区，可粘贴或直接提问。").text_size(px(12.)));
+            context = context.child(muted("未读取到选区，可粘贴或直接提问。").text_size(px(13.)));
         }
         if !quick.selection.text.is_empty() {
             context = context.child(
@@ -749,7 +749,7 @@ impl Workbench {
                     .border_color(rgb(0xd4d4d8))
                     .pl(px(10.))
                     .text_color(rgb(0x85858b))
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .line_height(px(18.))
                     .child(quick.selection.text.clone())
                     .test_support(),

@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod capture;
+pub mod files;
 pub mod projects;
 pub mod routing;
 pub mod sessions;

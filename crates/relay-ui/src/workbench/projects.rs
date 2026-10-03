@@ -170,7 +170,7 @@ impl Workbench {
         column()
             .gap(px(16.))
             .child(muted(self.text(Text::ContextIndependent)).text_size(px(13.)))
-            .child(muted(self.text(Text::ContextSyncDetail)).text_size(px(12.)))
+            .child(muted(self.text(Text::ContextSyncDetail)).text_size(px(13.)))
             .child(
                 Button::new("context-project-instructions")
                     .outline()
@@ -274,7 +274,7 @@ impl Workbench {
                             )
                             .child(
                                 muted(item.content.chars().take(100).collect::<String>())
-                                    .text_size(px(12.)),
+                                    .text_size(px(13.)),
                             )
                     })),
             )

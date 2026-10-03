@@ -63,7 +63,7 @@ impl Workbench {
                     .label(label.clone())
                     .icon(icon(IconName::Sparkles).size(px(14.)))
                     .child(icon(IconName::ChevronDown).size(px(12.)))
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .text_color(rgb(0x696970))
                     .accessibility_label(format!("{}: {label}", self.text(Text::ChooseHarness))),
             )
@@ -85,7 +85,7 @@ impl Workbench {
             .p(px(8.))
             .child(
                 muted(self.text(Text::Harness))
-                    .text_size(px(10.))
+                    .text_size(px(13.))
                     .px(px(8.))
                     .pt(px(4.)),
             )
@@ -106,14 +106,14 @@ impl Workbench {
                                     AgentSource::Auto => self.text(Text::AutoLocal),
                                     AgentSource::Local(_) => self.text(Text::LocalInstall),
                                 })
-                                .text_size(px(11.)),
+                                .text_size(px(13.)),
                             ),
                     )
                     .child(icon(IconName::Check).size(px(16.))),
             )
             .child(
                 muted(status_text(language, &state.status).to_owned())
-                    .text_size(px(12.))
+                    .text_size(px(13.))
                     .px(px(8.)),
             )
             .when(
@@ -160,7 +160,7 @@ impl Workbench {
                                     .pt(px(8.))
                                     .child(
                                         muted(config_name(language, config).to_owned())
-                                            .text_size(px(11.))
+                                            .text_size(px(13.))
                                             .px(px(8.))
                                             .pb(px(4.)),
                                     )
@@ -233,7 +233,7 @@ impl Workbench {
                         |view| {
                             view.child(
                                 muted(self.text(Text::ModelManaged))
-                                    .text_size(px(12.))
+                                    .text_size(px(13.))
                                     .p(px(8.)),
                             )
                         },
@@ -247,7 +247,7 @@ impl Workbench {
                         .justify_start()
                         .icon(icon(IconName::Settings).size(px(15.)))
                         .label(self.text(Text::ManageAgents))
-                        .text_size(px(12.))
+                        .text_size(px(13.))
                         .on_click(
                             cx.listener(|this, _, window, cx| this.manage_agents(window, cx)),
                         ),
@@ -340,7 +340,7 @@ impl Workbench {
                             .rounded(px(10.))
                             .bg(rgb(0xfff4ed))
                             .text_color(rgb(0x9a542a))
-                            .text_size(px(12.))
+                            .text_size(px(13.))
                             .child(div().mb(px(5.)).child(self.text(Text::AgentError)))
                             .child(error.clone()),
                     )
@@ -373,10 +373,10 @@ impl Workbench {
                                 status_text(self.settings_snapshot.language, &state.status)
                                     .to_owned(),
                             )
-                            .text_size(px(11.)),
+                            .text_size(px(13.)),
                         )
                         .when(state.pending_config.is_some(), |view| {
-                            view.child(muted(self.text(Text::ApplyingSelection)).text_size(px(11.)))
+                            view.child(muted(self.text(Text::ApplyingSelection)).text_size(px(13.)))
                         }),
                 )
             })
@@ -395,7 +395,7 @@ impl Workbench {
                         .border_1()
                         .border_color(rgb(0xe2d6bc))
                         .bg(rgb(0xfffcf5))
-                        .child(muted(self.text(Text::ApprovalNeeded)).text_size(px(11.)))
+                        .child(muted(self.text(Text::ApprovalNeeded)).text_size(px(13.)))
                         .child(
                             div()
                                 .font_weight(FontWeight::MEDIUM)
@@ -408,7 +408,7 @@ impl Workbench {
                                     .id(("permission-detail", permission.id))
                                     .max_h(px(120.))
                                     .overflow_y_scroll()
-                                    .text_size(px(11.))
+                                    .text_size(px(13.))
                                     .child(permission.detail.clone()),
                             )
                         })
@@ -527,7 +527,7 @@ impl Workbench {
                         .child(
                             column()
                                 .gap(px(10.))
-                                .child(muted(self.text(Text::Installation)).text_size(px(11.)))
+                                .child(muted(self.text(Text::Installation)).text_size(px(13.)))
                                 .child(
                                     row()
                                         .gap(px(10.))
@@ -580,10 +580,10 @@ impl Workbench {
                                         }
                                         AgentSource::Local(path) => path.display().to_string(),
                                     })
-                                    .text_size(px(12.)),
+                                    .text_size(px(13.)),
                                 )
                                 .when_some(state.runtime_version.clone(), |view, version| {
-                                    view.child(muted(version).text_size(px(11.)))
+                                    view.child(muted(version).text_size(px(13.)))
                                 })
                                 .children(state.local_installations.iter().enumerate().map(
                                     |(index, path)| {
@@ -592,7 +592,7 @@ impl Workbench {
                                             .ghost()
                                             .justify_start()
                                             .label(path.display().to_string())
-                                            .text_size(px(12.))
+                                            .text_size(px(13.))
                                             .disabled(state.status.is_busy())
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.agent_action(
@@ -633,7 +633,7 @@ impl Workbench {
                                 )
                                 .child(
                                     muted(state.working_directory.display().to_string())
-                                        .text_size(px(11.)),
+                                        .text_size(px(13.)),
                                 ),
                         )
                         .when(state.status == ConnectionStatus::Ready, |view| {
