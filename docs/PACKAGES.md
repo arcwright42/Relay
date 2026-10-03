@@ -7,12 +7,12 @@
 | 包 | 职责 | 允许的直接依赖 |
 | --- | --- | --- |
 | `relay` | 应用启动、依赖装配、窗口与退出生命周期 | `relay-ui`、`relay-core`、`relay-runtime`、`relay-platform`、`gpui-kit` |
-| `relay-ui` | 工作台、项目与文字资料编辑、独立文件 Tab 及预览编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
-| `relay-platform` | macOS 全局快捷键、辅助功能选区采集与原生浮窗定位 | `relay-core`、`async-channel`、`objc2`、`objc2-app-kit`、`objc2-foundation` |
-| `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / FileService / SettingsService / RoutingService 接口 | 无 |
-| `relay-runtime` | 安装、项目存储、上下文增量、会话恢复、对话诊断、偏好及 Jev 项目判断 | `relay-core`、`relay-acp`、`anyhow`、`dotenvy`、`serde`、`serde_json`、`sha2`、`ureq`、`security-framework`（macOS） |
+| `relay-ui` | 工作台、独立语音浮层、项目与文字资料编辑、独立文件 Tab 及预览编辑、对话诊断、中英文文案与原生菜单 | `relay-core`、`gpui-kit` |
+| `relay-platform` | macOS 快捷键、选区、浮窗、麦克风权限、本地唤醒检测、VAD 端点与系统朗读 | `relay-core`、`async-channel`、`block2`、`objc2`、`objc2-app-kit`、`objc2-foundation`、`objc2-av-foundation`、`cpal`、`sherpa-onnx` |
+| `relay-core` | 项目、资料、事实/决策及来源、对话诊断、AgentService / ProjectService / FileService / SettingsService / RoutingService / VoiceService 与采音、转写端口 | 无 |
+| `relay-runtime` | 安装、项目与个人文件存储、上下文增量、会话恢复、对话诊断、偏好、Jev 项目判断与语音对话轮次 | `relay-core`、`relay-acp`、`anyhow`、`dotenvy`、`serde`、`serde_json`、`sha2`、`ureq`、`tokio`、`tokio-tungstenite`、`futures-util`、`uuid`、`security-framework`（macOS） |
 | `relay-acp` | ACP v1 协商、Agent 进程、认证、模型配置、流式事件、权限和取消 | `relay-core`、`agent-client-protocol`、`async-channel`、`async-io`、`futures-lite`、`serde_json` |
-| `xtask` | 包边界检查、质量检查、图标生成、本地 macOS 打包与 Launch Services 启动 | `serde_json` |
+| `xtask` | 包边界、质量检查、固定资源校验、图标、本地 macOS 打包与启动 | `serde_json`、`sha2` |
 
 `relay-ui` 内按工作台状态、导航、对话输入、辅助页面和开发工具组织模块。`devtools` feature 默认从应用入口开启，统一启用 GPUI 检查器与 Relay 右键入口；关闭默认 feature 可以剔除这些开发入口。
 
@@ -34,6 +34,26 @@ ACP SDK 仍固定 2.2.0，仅显式开启 `unstable_end_turn_token_usage` 来读
 
 `relay-core::capture` 定义不可变选区、动作和网页抓取接口；`relay-runtime::webfetch` 后台执行 Moli，UI 在点击发送时只组装当时已取得的材料。
 
+### 语音唤醒领域
+
+`relay-core::voice` 定义会话/轮次快照、错误和采音、资源、ASR、项目对话、朗读端口（`VoiceInputBackend`、`WakeResources`、`SpeechTranscriber`、`VoicePromptService`、`SpeechOutput`、`SpeechAudioOutput`、`SpeechAudioStream`）。快照不包含模型句柄、API key 或原始 PCM。`relay-runtime::voice` 分为生命周期 `mod`、资源 `resources`、轮次编排 `turns`、项目执行 `dialogue`、云语音 `cloud/{config,transport,asr,tts}`。偏好持久化、generation、会话和轮次编号隔离旧结果；唤醒冷却为 3 秒。
+
+`relay-platform::voice` 按 `permission / activity / audio / detector / speech / playback / output` 管理 macOS 权限、后台活动声明、CPAL 采音、sherpa-onnx KWS、Silero VAD、流式 PCM 播放与备用系统语音。采音线程持有 `activity::ListeningActivity`，通过 `NSProcessInfo` 防止监听期间进入 App Nap，同时允许系统空闲睡眠；关闭监听、采音失败和应用退出均通过 RAII 释放，不依赖窗口生命周期，不创建独立服务。只有平台包依赖原生 SDK，音频回调使用有界队列，不等待推理；丢帧、输入设备变化、处理或朗读期间均重置缓冲。KWS 流定期重建并保留短重叠。会话中以 16 kHz、512 样本窗口运行 VAD；默认阈值 0.5，最少人声 0.25 秒、连续静音约 0.8 秒后提交完整语句。静音和低幅背景噪声不提交；超出 60 秒丢弃整句并等待手动继续，不以截断内容执行任务。领域载荷为单声道 16 kHz PCM16 WAV，音量事件携带会话编号。
+
+`turns` 串行执行 ASR → Prompt → Jev → 项目 Agent → TTS，处理期间暂停新语句，队列最多 1 个待处理任务，防止取消切换造成无限积压。唤醒后第一句的唤醒前缀会被移除；空转写不路由。所有异步进度检查 generation、session ID、turn ID 和取消标记。最近转写和可见回复各限制 32,000 字符。`UnconfiguredTranscriber` 明确报告待配置，音频立即释放，不积压、不上传。实际入口注入 `QwenSpeech`；没有密钥时不上传，配置失败或远端失败会显示错误，不能把部分转写当完整任务。
+
+`ProjectVoiceDialogue` 复用 `RoutingService / ProjectService / AgentService`。Jev 只判断归属；低置信度返回带目录版本的候选，由用户选择后继续，新项目使用 `CreateAtRevision`。已有项目复用 Agent 会话和上下文机制，不覆盖文本草稿，不向忙碌的 Agent 插入任务，不自动登录或批准工具授权。`AgentService::send_turn` 在派发时返回本轮 assistant message ID，回复、失败和取消均绑定该 ID；`CancelTurn` 只取消仍是当前轮次的请求，不能取消后来从其他窗口发送的任务。
+
+`QwenSpeech` 同时实现 ASR 和 TTS 端口。固定 ASR `qwen-audio-3.1-asr-flash-message` 与 TTS `qwen-audio-3.1-tts-flash`，中文音色 `longanhuan_v3.1`、英文 `Annie_v3.1`。默认连接千问官方 `maas.qianwenaiapi.com`，保留北京/新加坡及工作空间域名配置。密钥优先读取进程环境、工作目录 `.env`、独立 macOS Keychain 条目；不导出到进程环境，不与 Jev 凭据混用，不记录请求或服务端原始错误。配置只允许官方域名，不自动尝试其他服务。
+
+`transport` 使用固定 `tokio 1.53.1`、`tokio-tungstenite 0.30.0`（Rustls/WebPKI）、`futures-util 0.3.34` 和 `uuid 1.26.1`。每个任务拥有独立 WebSocket 和 UUID，先等待 task-started；ASR 上传经过格式/长度检查的 16 kHz PCM，只接收终态句子并按 sentence ID 去重，task-finished 后才交给 Jev。握手 10 秒、任务启动 15 秒、ASR 总计 90 秒、TTS 总计 330 秒超时；取消覆盖连接、上传、等待结果和播放。单帧/消息最大 512 KiB，转写最多 32 KiB，合成音频最多 5 分钟。自动化测试使用本机 WebSocket 服务和假密钥，不调用云服务。
+
+TTS 使用 24 kHz PCM16 流，收到音频就交给 `MacAudioOutput`，平台层用 CPAL 播放和重采样，最多缓存 4 秒并反压，不把音频写入磁盘。完成或取消时销毁输出流；播放完成包含硬件缓冲时间，然后轮次层再等待 300 ms 尾音才恢复收音。共同的 `spoken_text` 策略跳过代码块、最多朗读 3,000 字。保留 `MacSpeechOutput` 作为可显式注入的系统声音实现，云端失败不会静默切换。默认半双工，用户可点「取消并重新说话」；当前不支持用人声打断播放。
+
+入口在创建项目、Agent 和 Jev 服务后组装语音管线并管理独立 `VoicePanel`。UI 只显示阶段、当前请求/回复/项目、候选选择、继续和结束按钮，不处理音频或直接发送 Agent 命令。打开项目会话复用现有窗口事件；关闭浮层、点击结束或 Esc 结束会话并恢复等待唤醒，旧窗口不能结束新会话。设置默认关闭，开关和语言由同一偏好写入线程合并持久化。
+
+构建固定 `sherpa-onnx 1.13.8`（macOS static）、`cpal 0.16.0`、`objc2-av-foundation 0.3.2`。`crates/relay-runtime/resources/voice/manifest.json` 固定引擎、模型、VAD、关键词和许可证的来源及 SHA-256：中英双语 3M Zipformer，chunk-16，int8 encoder/joiner、fp32 decoder，约 5.2 MiB；Silero VAD 643,854 字节。`verify / bundle` 准备并校验资源，运行时重新验证。模型和库缓存于 Cargo target，随应用资源交付，不进入 Git、不部署独立服务。平台测试使用仓库内的短合成 WAV 验证实际 VAD，runtime 使用受控端口验证整条轮次与取消，测试不调用远程 ASR 或真实 Agent。
+
 ## 依赖和版本
 
 - 直接依赖只在根 `Cargo.toml` 的 `workspace.dependencies` 中声明，成员包使用 `workspace = true` 继承。
@@ -53,7 +73,7 @@ cargo xtask check-packages
 cargo xtask verify
 ```
 
-`check-packages` 读取 Cargo 的解析结果，检查允许依赖方向、精确版本、禁止 Git 分支、统一包版本和禁止发布；同时检查适配器 npm 清单与 lockfile 的一致性，禁止直接依赖 Codex CLI 或使用 override 固定它，每个下载包必须固定版本、来自指定 registry 并带 SHA-512 integrity。规则包含反向依赖、浮动版本和缺失校验值的回归测试。
+`check-packages` 读取 Cargo 的解析结果，检查允许依赖方向、精确版本、禁止 Git 分支、统一包版本和禁止发布；同时检查适配器 npm 清单与 lockfile 的一致性，禁止直接依赖 Codex CLI 或使用 override 固定它，每个下载包必须固定版本、来自指定 registry 并带 SHA-512 integrity。唤醒检查同时约束原生资源清单、SDK 版本、macOS 目标和 static feature。规则包含反向依赖、浮动版本、缺失校验值及唤醒依赖漂移的回归测试。
 
 `verify` 依次执行包边界检查、格式检查、workspace 全目标全 feature Clippy（警告作为错误）与全 feature 测试。`relay-acp/test-support` 启用测试 ACP 子进程及内存命令传输，覆盖登录、模型、权限、取消、恢复去重、用量和进程退出；不会打进应用包。UI 的开发依赖额外启用 GPUI Kit 的 `test-support`，用真实鼠标/键盘事件覆盖项目与资料表单、资料选择，以及 Inspector 关闭与普通点击恢复。测试不需要网络、真实账号或模型费用。GitHub Actions 的 macOS 工作流运行同一条命令；CI 依赖的 Actions 固定到提交 SHA。
 

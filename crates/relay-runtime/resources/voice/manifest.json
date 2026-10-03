@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "engine": {
+    "version": "1.13.8",
+    "archives": {
+      "aarch64": {
+        "name": "sherpa-onnx-v1.13.8-osx-arm64-static-lib.tar.bz2",
+        "sha256": "9091bf160dc7fdacedbc906b212badf53c2993f4e5277a0e03998e96c31d60da"
+      },
+      "x86_64": {
+        "name": "sherpa-onnx-v1.13.8-osx-x64-static-lib.tar.bz2",
+        "sha256": "a3f88da3e54c850a12d61431e73f8affcd1f13738b75b768847dd79541835b4b"
+      }
+    }
+  },
+  "model": {
+    "name": "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20",
+    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2",
+    "sha256": "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6",
+    "files": [
+      {
+        "name": "encoder.onnx",
+        "source": "encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+        "bytes": 4599656,
+        "sha256": "408bbd740838c42d5bf6d1c5b80b3c88b616c7860b92d980328b5b068c76ae48"
+      },
+      {
+        "name": "decoder.onnx",
+        "source": "decoder-epoch-13-avg-2-chunk-16-left-64.onnx",
+        "bytes": 759829,
+        "sha256": "63a22dd60f40fff082ac3e09afa507f6787da36df76ded2fbe145fa233e22c21"
+      },
+      {
+        "name": "joiner.onnx",
+        "source": "joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx",
+        "bytes": 86629,
+        "sha256": "190d4067b4cc20b72a42a1916e69d92052000fb7051a427ebb1bc72a69207dc1"
+      },
+      {
+        "name": "tokens.txt",
+        "source": "tokens.txt",
+        "bytes": 1928,
+        "sha256": "2d3f32311f9b692b964da3c90e830258d3e78e013cb0c992dbfb15cd5a1a71b0"
+      }
+    ]
+  },
+  "keywords": {
+    "name": "keywords.txt",
+    "sha256": "3f17886d0a89f17a79b5cb4b39b0c5658aa34d1517d2f651b2bfafc41ba21ef7"
+  },
+  "sources": [
+    "https://github.com/k2-fsa/sherpa-onnx/tree/v1.13.8",
+    "https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html"
+  ],
+  "notices": [
+    {
+      "name": "sherpa-onnx-LICENSE",
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    {
+      "name": "onnxruntime-LICENSE",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/LICENSE",
+      "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c",
+      "bytes": 1073
+    },
+    {
+      "name": "onnxruntime-ThirdPartyNotices.txt",
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.28.2/ThirdPartyNotices.txt",
+      "sha256": "0e07b95f3a8d6230037707c5c4a2b554d12c4cb67369669ac255635528ffcee2",
+      "bytes": 325054
+    },
+    {
+      "name": "kaldi-native-fbank-LICENSE",
+      "url": "https://raw.githubusercontent.com/csukuangfj/kaldi-native-fbank/v1.22.3/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    {
+      "name": "kaldi-decoder-LICENSE",
+      "url": "https://raw.githubusercontent.com/k2-fsa/kaldi-decoder/v0.3.0/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "bytes": 11358
+    },
+    {
+      "name": "openfst-COPYING",
+      "url": "https://raw.githubusercontent.com/csukuangfj/openfst/v1.8.5-2026-07-09/COPYING",
+      "sha256": "4300529197035fd3452350718a0b8cee984e9412c9932d7f35fcde849fc97a4b",
+      "bytes": 559
+    },
+    {
+      "name": "simple-sentencepiece-LICENSE",
+      "url": "https://raw.githubusercontent.com/pkufool/simple-sentencepiece/v0.7/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "bytes": 11357
+    },
+    {
+      "name": "espeak-ng-COPYING",
+      "url": "https://raw.githubusercontent.com/csukuangfj/espeak-ng/ed530aa113046142eb5115cf2fc9157854d0ffe1/COPYING",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "bytes": 35147
+    },
+    {
+      "name": "kissfft-COPYING",
+      "url": "https://raw.githubusercontent.com/mborgerding/kissfft/131.1.0/COPYING",
+      "sha256": "a2840585f8411be8e6826a31ef15ae65c950bd74a2437a73b013398a934ad0c6",
+      "bytes": 246
+    },
+    {
+      "name": "piper-phonemize-LICENSE.md",
+      "url": "https://raw.githubusercontent.com/csukuangfj/piper-phonemize/f3ff95afc03640bc1399e113e83361192a2fafb4/LICENSE.md",
+      "sha256": "13746d509d74e55ea2265fbef204bb7cdbf84a8315b0207e988326cb54387028",
+      "bytes": 1071
+    },
+    {
+      "name": "uni-algo-LICENSE.md",
+      "url": "https://raw.githubusercontent.com/csukuangfj/piper-phonemize/f3ff95afc03640bc1399e113e83361192a2fafb4/licenses/uni-algo/LICENSE.md",
+      "sha256": "c55648b02873556d6ab2de14938998101fda3a0f293337542af9196435def318",
+      "bytes": 2208
+    },
+    {
+      "name": "kissfft-BSD-3-Clause",
+      "url": "https://raw.githubusercontent.com/mborgerding/kissfft/131.1.0/LICENSES/BSD-3-Clause",
+      "sha256": "4d6bcab46f27d6d0c878e8305d4bdcfe040d52bf6656b9771f04c9fb9902c0ed",
+      "bytes": 1830
+    },
+    {
+      "name": "silero-vad-LICENSE",
+      "url": "https://raw.githubusercontent.com/snakers4/silero-vad/v5.1.2/LICENSE",
+      "bytes": 1075,
+      "sha256": "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b"
+    }
+  ],
+  "vad": {
+    "name": "silero_vad.onnx",
+    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "bytes": 643854,
+    "sha256": "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+  }
+}

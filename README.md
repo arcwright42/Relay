@@ -38,10 +38,11 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 - 开发模式默认开启：右键 **检查元素**，或 `⌘⌥I` 打开 GPUI Inspector，再点击目标元素查看布局和样式。
 - 原创 Relay 标志及 macOS 应用图标。
 - **⌃⌥Space** 全局快捷面板：读取选区与可取得的网页 URL，提供 AI 搜索、解释、翻译、摘要、加入项目；小窗与工作台共享项目主对话。
+- **设置 → 语音唤醒**：开启后说「嘿 relay」或「Hey Relay」进入独立语音会话，持续接收后续讲话，点击「结束」或按 Esc 后回到等待唤醒。浮层显示真实麦克风音量；使用本地 sherpa-onnx 中英双语模型，首次需要麦克风权限。
 - 关闭窗口后保持常驻；Dock 可重开工作台，Relay 菜单提供快捷面板和退出。
 - Relay 使用固定版本 Moli 后台补充网页上下文；抓取未完成或失败不阻塞发送，迟到正文不追加到已发送轮次。
 
-输入草稿只保留在当前窗口中。文字资料可直接粘贴保存；文件和图片可在独立文件 Tab 导入。任务线程、其他 Harness 会话导入、原生会话续聊、对话中的多模态附件、主 Agent 委派、自动划词浮现、语音和视觉尚未实现。快捷键选区和网页预取已有基础实现，浏览器兼容性仍需实际权限环境验收。首次升级保留旧项目及已有对话，不迁入示例资料。
+输入草稿只保留在当前窗口中。文字资料可直接粘贴保存；文件和图片可在独立文件 Tab 导入。任务线程、其他 Harness 会话导入、原生会话续聊、对话中的多模态附件、主 Agent 委派、自动划词浮现、视觉尚未实现；语音轮次已接入千问 ASR/TTS，需要语音密钥及 Jev 配置。快捷键选区和网页预取已有基础实现，浏览器兼容性仍需实际权限环境验收。首次升级保留旧项目及已有对话，不迁入示例资料。
 
 点击左侧 **项目 +** 创建项目，标题右上方齿轮编辑项目指令；输入框 **添加上下文** 管理文字资料。只有选用的资料会随下一条消息发送，修改不会影响正在执行的轮次。每份资料最多 12,000 字，选用上下文合计最多 32,000 字，超限时明确提示。
 
@@ -54,6 +55,12 @@ Relay 以项目组织长期上下文，以主 Agent 协调工作，通过 Agent 
 打开项目输入框的 **Codex** 菜单，选择 **连接本地 Codex**（英文界面为 **Connect local Codex**）。未发现本地安装时先安装 Codex 或在智能体页面选择可执行文件。已有 Codex 登录通常可直接复用；否则按返回的登录方式完成认证。连接后选择模型并发送消息。**智能体 / Agents** 页面管理安装来源与项目工作目录。详见 [Codex 接入](docs/CODEX.md)。
 
 界面语言独立保存在 `~/Library/Application Support/Relay/settings.json`，也遵循 `RELAY_DATA_DIR`。导航、设置、快捷动作、连接状态与已知 ACP 选项随语言切换；用户对话、模型名称、路径与无法识别的上游诊断保留原文。
+
+语音唤醒默认关闭，开关与语言共同保存到应用偏好。首次开启时允许 macOS 麦克风访问；拒绝后可从设置打开系统麦克风权限并重试。Relay 运行且 Mac 保持唤醒时持续监听，关闭工作台仍可使用。设置也提供「开始语音会话」手动入口。唤醒后由本地 Silero VAD 识别人声，连续约 0.8 秒停顿结束一轮，再依次进行 ASR → Prompt → Jev → 项目 Agent 会话 → 千问流式语音播报。处理和朗读期间暂停收音，结束后自动继续听，无需重复唤醒词；可取消本轮重新说话。Jev 归属不明确时选择项目，Agent 授权仍在项目会话确认。单次超过 60 秒会提示重新说话，不拆成多个任务。结束会话恢复关键词检测，关闭开关释放麦克风。音频仅在内存中处理，不录音存档。ASR 使用 `qwen-audio-3.1-asr-flash-message`，TTS 使用 `qwen-audio-3.1-tts-flash`；音频只在唤醒后的完整语句中上传，唤醒词和停顿检测保持本地。未配置语音密钥时明确提示并释放音频。Jev 仍使用独立的 OpenRouter 配置。
+
+后台监听由 Relay 进程中的采音线程负责：切到其他应用、隐藏 Relay、关闭全部窗口后都继续等待唤醒，检测到关键词后重新显示语音浮层。关闭语音浮层仅结束当前会话，恢复等待唤醒；关闭设置中的语音开关或通过 `Cmd+Q` 退出 Relay 才会停止监听。监听期间向 macOS 声明用户发起的持续活动，避免 App Nap 延后处理；该声明随采音线程退出释放，允许 Mac 正常睡眠。不安装独立 daemon 或登录启动项。
+
+语音密钥可通过已签名应用 `dist/Relay.app/Contents/MacOS/relay --voice-save-key` 从标准输入保存到 macOS 钥匙串（输入时请关闭终端回显，例如 `read -s` 后管道传入，勿放在命令参数中）。重启 Relay 后生效，也支持 `DASHSCOPE_API_KEY`，配置项见 `.env.example`。 Jev 的 OpenRouter 密钥可在设置中保存，也可用 `relay --jev-save-key` 从标准输入保存到独立钥匙串条目。默认使用千问统一接口，无需地域或工作空间；阿里云地域密钥可设置 `RELAY_VOICE_REGION` 与 `DASHSCOPE_WORKSPACE_ID`。`relay --voice-check <16k-mono-pcm16.wav>` 是显式云服务检查：上传指定 WAV，输出转写，再播放固定短句；不录制麦克风、不调用 Agent，可能产生少量模型费用。
 
 ## 开发与运行
 
@@ -79,9 +86,11 @@ cargo xtask bundle
 cargo xtask start
 ```
 
+`verify` 和 `bundle` 使用校验 SHA-256 的固定 sherpa-onnx 1.13.8 静态库；同时校验约 5.2 MiB 的唤醒模型、约 629 KiB 的 Silero VAD 模型及关键词，`bundle` 将这些资源和许可证复制到应用包。首次准备需要下载上游公开归档，之后复用校验后的 target 缓存，不需部署独立服务。直接 Cargo 调试前执行 `cargo xtask prepare-voice`，将打印的库目录设置为 `SHERPA_ONNX_LIB_DIR`；模型自动从 target 下的 `relay-resources/voice` 读取，`RELAY_WAKE_MODEL_DIR` 可显式覆盖，但仍要求清单与校验值一致。包边界和升级约束见 [包治理](docs/PACKAGES.md#语音唤醒领域)。
+
 `start` 复用已运行的 Relay，更新构建后先退出旧进程再启动；启动日志写入 Cargo target 目录的 `relay-launch.log`。选区验收使用这条启动路径，让 macOS 将辅助功能权限归属于 Relay 自身。`cargo run --locked` 仍可用于代码调试，但直接从终端或其他应用启动二进制可能继承父进程的权限归属。
 
-`bundle` 签名优先级为 `RELAY_SIGNING_IDENTITY` → 仓库根目录的 `.relay-signing-identity` → 已有 `dist/Relay.app` 的签名身份；均未配置时才使用 ad-hoc，并提示重编译可能导致辅助功能授权失效。`.relay-signing-identity` 保存证书名称或 SHA-1，已被 Git 忽略。已有开发者签名会自动沿用，签名失败不会退回 ad-hoc；也可显式设置 `RELAY_SIGNING_IDENTITY=-`。首次从 ad-hoc 切换到稳定证书仍可能需要重新授权。
+`bundle` 签名优先级为 `RELAY_SIGNING_IDENTITY` → 仓库根目录的 `.relay-signing-identity` → 已有 `dist/Relay.app` 的签名身份；均未配置时才使用 ad-hoc，重编译可能导致系统隐私授权失效，包括辅助功能、麦克风与文稿目录。`.relay-signing-identity` 保存证书名称或 SHA-1，已被 Git 忽略。已有开发者签名会自动沿用，签名失败不会退回 ad-hoc；也可显式设置 `RELAY_SIGNING_IDENTITY=-`。首次从 ad-hoc 切换到稳定证书仍可能需要重新授权。
 
 真实 Jev 联调使用隔离的临时项目，可运行 `cargo run -p relay-runtime --example jev_probe --locked`；添加 `-- --execute --model gpt-6.1-sol` 可进一步验证已安装 Codex 的项目上下文交付。详细结果和客户端兼容性见 [Jev 项目归属方案](docs/PROJECT-ROUTING.md)。
 

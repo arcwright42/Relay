@@ -463,3 +463,74 @@ fn persistence_failure_prevents_prompt_dispatch_and_another_project_cannot_suppl
     assert!(fixture.runtime.snapshot(ProjectId(1)).error.is_some());
     assert!(fixture.runtime.snapshot(other).messages.is_empty());
 }
+
+#[test]
+fn tracked_voice_send_returns_its_response_and_stale_cancel_cannot_stop_a_later_turn() {
+    let fixture = Fixture::new();
+    let (connection, received) = relay_acp::test_connection();
+    fixture
+        .runtime
+        .connections
+        .lock()
+        .unwrap()
+        .insert(ProjectId(1), connection);
+    fixture.ready(false);
+    let first = fixture
+        .runtime
+        .send_turn(ProjectId(1), "Voice request".into())
+        .unwrap();
+    let take_prompt = || {
+        let started = Instant::now();
+        loop {
+            if let Ok(command) = received.try_recv() {
+                assert!(matches!(command, AcpCommand::Prompt { .. }));
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(3));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    take_prompt();
+    let state = fixture.runtime.snapshot(ProjectId(1));
+    assert_eq!(state.messages.last().unwrap().id, first);
+    assert_eq!(state.messages.last().unwrap().role, MessageRole::Assistant);
+    assert!(
+        fixture
+            .runtime
+            .send_turn(ProjectId(1), "Cannot overlap".into())
+            .is_err()
+    );
+    fixture.finish(TurnOutcome::Complete);
+    let second = fixture
+        .runtime
+        .send_turn(ProjectId(1), "Text request".into())
+        .unwrap();
+    take_prompt();
+    assert_ne!(first, second);
+    fixture
+        .runtime
+        .dispatch(
+            ProjectId(1),
+            AgentCommand::CancelTurn { response_id: first },
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.runtime.snapshot(ProjectId(1)).status,
+        ConnectionStatus::Running
+    );
+    assert!(received.try_recv().is_err());
+    fixture
+        .runtime
+        .dispatch(
+            ProjectId(1),
+            AgentCommand::CancelTurn {
+                response_id: second,
+            },
+        )
+        .unwrap();
+    assert!(matches!(received.try_recv().unwrap(), AcpCommand::Cancel));
+    assert_eq!(
+        fixture.runtime.snapshot(ProjectId(1)).status,
+        ConnectionStatus::Cancelling
+    );
+}

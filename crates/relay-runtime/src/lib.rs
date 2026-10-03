@@ -12,12 +12,16 @@ mod routing;
 mod sessions;
 mod settings;
 mod store;
+mod voice;
 mod webfetch;
+pub use voice::{
+    BundledWakeResources, ProjectVoiceDialogue, QwenSpeech, VoiceRuntime, save_voice_key,
+};
 pub use webfetch::MoliFetcher;
 
 pub use files::FileStore;
 pub use projects::ProjectStore;
-pub use routing::JevRouter;
+pub use routing::{JevRouter, save_routing_key};
 pub use sessions::ClientSessionStore;
 pub use settings::SettingsStore;
 
@@ -716,6 +720,22 @@ impl AgentService for AgentRuntime {
     }
 
     fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String> {
+        self.dispatch_with_response(project, command, &mut None)
+    }
+    fn send_turn(&self, project: ProjectId, prompt: String) -> Result<u64, String> {
+        let mut response_id = None;
+        self.dispatch_with_response(project, AgentCommand::Send(prompt), &mut response_id)?;
+        response_id.ok_or_else(|| "Cannot send an empty prompt.".into())
+    }
+}
+
+impl AgentRuntime {
+    fn dispatch_with_response(
+        &self,
+        project: ProjectId,
+        command: AgentCommand,
+        response_id: &mut Option<u64>,
+    ) -> Result<(), String> {
         if self.shared.shutdown.load(Ordering::Acquire) {
             return Err("Relay is shutting down.".into());
         }
@@ -886,10 +906,23 @@ impl AgentService for AgentRuntime {
                 });
                 state.view.status = ConnectionStatus::Running;
                 state.view.error = None;
+                *response_id = Some(id + 1);
                 persist = true;
             }
             AgentCommand::Cancel => {
                 if state.view.status == ConnectionStatus::Running {
+                    self.send_command(project, AcpCommand::Cancel)?;
+                    state.view.status = ConnectionStatus::Cancelling;
+                }
+            }
+            AgentCommand::CancelTurn { response_id } => {
+                if state.view.status == ConnectionStatus::Running
+                    && state
+                        .view
+                        .messages
+                        .last()
+                        .is_some_and(|message| message.id == response_id)
+                {
                     self.send_command(project, AcpCommand::Cancel)?;
                     state.view.status = ConnectionStatus::Cancelling;
                 }

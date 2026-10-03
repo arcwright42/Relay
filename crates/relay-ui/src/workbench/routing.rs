@@ -1,4 +1,5 @@
 use super::*;
+use crate::i18n::routing_error_text;
 use relay_core::{ProjectId, projects::ProjectDraft, routing::*};
 
 pub(super) struct RoutingUi {
@@ -548,23 +549,5 @@ impl Workbench {
             .when_some(self.routing.key_error.or(snapshot.error), |view, error| {
                 view.child(muted(self.text(routing_error_text(error))).text_size(px(13.)))
             })
-    }
-}
-
-fn routing_error_text(error: RoutingError) -> Text {
-    match error {
-        RoutingError::NotConfigured => Text::RoutingMissingKey,
-        RoutingError::InvalidKey => Text::RoutingInvalidKey,
-        RoutingError::ConfigurationFile => Text::RoutingConfigurationFileError,
-        RoutingError::ExternallyConfigured => Text::RoutingExternalCredential,
-        RoutingError::Keychain => Text::RoutingKeychainError,
-        RoutingError::Unauthorized => Text::RoutingUnauthorized,
-        RoutingError::RateLimited => Text::RoutingRateLimited,
-        RoutingError::QuotaExceeded => Text::RoutingQuotaExceeded,
-        RoutingError::Unavailable => Text::RoutingUnavailable,
-        RoutingError::InvalidResponse => Text::RoutingInvalidResponse,
-        RoutingError::InputTooLarge => Text::RoutingInputTooLarge,
-        RoutingError::CatalogUnavailable => Text::RoutingCatalogUnavailable,
-        RoutingError::CatalogChanged => Text::RoutingCatalogChanged,
     }
 }

@@ -10,7 +10,7 @@
 4. 目标 Codex 已就绪时直接发送；尚未连接时自动连接该项目配置的 Codex，必要时由用户登录。界面显示待发送状态；取消、切换页面、修改草稿或连接失败后保留草稿，取消自动发送。目标正在运行任务时只保留草稿，不在旧任务结束后意外发送。
 5. 判断不清、没有密钥、超时、限流或错误响应时，保留首页输入，展示项目选择与新建按钮，由用户决定；不把接口失败视为“没有合适项目”。
 
-明确打开一个项目后，输入归属于这个项目，绕过 Jev，避免每次追问又被分配到别处。首页是本次 Jev 接入入口；现有快捷面板使用手动选择项目，自动归属可在后续复用 RoutingService。语音入口尚未实现。
+明确打开一个项目后，输入归属于这个项目，绕过 Jev，避免每次追问又被分配到别处。首页是本次 Jev 接入入口；现有快捷面板使用手动选择项目，自动归属可在后续复用 RoutingService。语音入口已复用同一 RoutingService：本地停顿检测后，经 ASR 转为 prompt，再交给 Jev 与项目 Agent。
 
 ## 官方接口与输入
 
@@ -74,7 +74,7 @@ HTTP 使用精确固定依赖 `ureq = 3.4.2`（关闭默认 features，仅 Rustl
 
 `.env` 通过只读迭代器解析，不修改进程环境。环境密钥不复制到钥匙串；设置显示来源并禁用保存、移除和渠道切换。要改用设置中的密钥，移除环境变量及 `.env` 中的配置并重启。启动进程已导出的环境变量仍按操作系统规则由子进程继承。
 
-在设置中保存的渠道与密钥使用 macOS 钥匙串，服务名 `com.arcwright42.relay.jev`，账户为数据目录路径摘要，独立 `RELAY_DATA_DIR` 不复用正式数据目录的钥匙串密钥。密钥不写入 settings.json、项目文件、日志或协议请求内容；只在 Authorization 中使用。保存成功或切换渠道时替换密码输入组件，清空包含密钥的撤销历史。首版非 macOS 平台不提供明文密钥持久化回退，仍可使用环境配置。
+除设置界面外，已签名应用也提供 `relay --jev-save-key`，从标准输入保存 OpenRouter 凭据（关闭终端回显，密钥不得放入命令参数），不创建项目或 Agent 运行时；重启应用后生效。在设置中保存的渠道与密钥使用 macOS 钥匙串，服务名 `com.arcwright42.relay.jev`，账户为数据目录路径摘要，独立 `RELAY_DATA_DIR` 不复用正式数据目录的钥匙串密钥。密钥不写入 settings.json、项目文件、日志或协议请求内容；只在 Authorization 中使用。保存成功或切换渠道时替换密码输入组件，清空包含密钥的撤销历史。首版非 macOS 平台不提供明文密钥持久化回退，仍可使用环境配置。
 
 ## 验证与限制
 
@@ -113,3 +113,8 @@ cargo run -p relay-runtime --example jev_probe --locked -- --execute --model gpt
 - [Confidence](https://docs.typesafe.ai/confidence)
 - [模型、语言与输入限制](https://docs.typesafe.ai/models)
 - [Vercel TypeSafe 兼容接口](https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe)
+
+
+2026-10-03 语音链路联调：用户提供的 OpenRouter 凭据通过已签名应用保存到 Keychain，千问和 Jev 密钥使用独立条目。合成音频「继续 Relay 语音联调项目，请只回复语音链路测试成功，不要调用工具，不要修改文件」经过真实千问 ASR，Jev 自动选中临时项目，本机 Agent 返回「语音链路测试成功」，随后千问 TTS 完成本机播放。测试未调用 Agent 工具，临时项目退出时清理；正式项目未写入测试消息。
+
+可使用已签名应用 `relay --voice-roundtrip-check <16k-mono-pcm16.wav>` 重复此检查：读取正式数据目录对应的已保存语音/Jev 凭据，在独立临时目录创建「Relay 语音联调」项目并复用已安装的本地 Agent 适配器，使用真实模型调用。Jev 要求人工选择、Agent 要求授权或 120 秒内未结束时停止，不自动批准工具。此检查不包含真实麦克风与真人唤醒。

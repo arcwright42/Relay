@@ -34,6 +34,7 @@ impl Language {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettingsSnapshot {
     pub language: Language,
+    pub voice_wake_enabled: bool,
     pub saving: bool,
     pub error: Option<String>,
 }
@@ -42,4 +43,5 @@ pub struct SettingsSnapshot {
 pub trait SettingsService: Send + Sync {
     fn snapshot(&self) -> SettingsSnapshot;
     fn set_language(&self, language: Language);
+    fn set_voice_wake_enabled(&self, enabled: bool);
 }

@@ -157,6 +157,7 @@ impl SettingsService for Fixtures {
         SettingsSnapshot::default()
     }
     fn set_language(&self, _: Language) {}
+    fn set_voice_wake_enabled(&self, _: bool) {}
 }
 impl ProjectService for Fixtures {
     fn snapshot(&self) -> ProjectCatalog {

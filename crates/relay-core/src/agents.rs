@@ -209,10 +209,20 @@ pub enum AgentCommand {
     Connect(AgentSource),
     Disconnect,
     Authenticate(String),
-    SetConfig { id: String, value: String },
+    SetConfig {
+        id: String,
+        value: String,
+    },
     Send(String),
     Cancel,
-    AnswerPermission { id: u64, choice: Option<String> },
+    /// Cancel only this response; never interrupt a later turn in the same project.
+    CancelTurn {
+        response_id: u64,
+    },
+    AnswerPermission {
+        id: u64,
+        choice: Option<String>,
+    },
     SetWorkingDirectory(PathBuf),
     DiscoverLocal,
 }
@@ -222,6 +232,10 @@ pub trait AgentService: Send + Sync {
     fn revision(&self) -> u64;
     fn snapshot(&self, project: ProjectId) -> AgentSnapshot;
     fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String>;
+    /// Atomically submits a prompt and returns its stable assistant message ID.
+    fn send_turn(&self, _: ProjectId, _: String) -> Result<u64, String> {
+        Err("This agent service does not support tracked turns.".into())
+    }
 }
 
 #[cfg(test)]
