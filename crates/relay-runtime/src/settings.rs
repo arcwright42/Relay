@@ -13,6 +13,8 @@ use std::{
 struct SavedSettings {
     version: u32,
     language: String,
+    #[serde(default)]
+    voice_wake_enabled: bool,
 }
 
 #[derive(Default)]
@@ -24,7 +26,7 @@ struct State {
 /// One ordered writer prevents a slow earlier toggle from replacing a later choice.
 pub struct SettingsStore {
     state: Arc<Mutex<State>>,
-    writer: Mutex<Option<mpsc::Sender<(u64, Language)>>>,
+    writer: Mutex<Option<mpsc::Sender<(u64, Language, bool)>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -32,7 +34,10 @@ impl SettingsStore {
     pub fn new(root: PathBuf) -> Self {
         let mut initial = State::default();
         match load(&root) {
-            Ok(language) => initial.view.language = language,
+            Ok((language, enabled)) => {
+                initial.view.language = language;
+                initial.view.voice_wake_enabled = enabled;
+            }
             Err(error) => {
                 initial.view.error = Some(format!("Could not read settings: {error:#}"));
             }
@@ -42,9 +47,9 @@ impl SettingsStore {
         let shared = state.clone();
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
-            while let Ok((mut generation, mut language)) = receiver.recv() {
+            while let Ok((mut generation, mut language, mut enabled)) = receiver.recv() {
                 while let Ok(latest) = receiver.try_recv() {
-                    (generation, language) = latest;
+                    (generation, language, enabled) = latest;
                 }
                 let result = (|| -> Result<()> {
                     if preserve_unreadable_file {
@@ -52,7 +57,7 @@ impl SettingsStore {
                         load(&root)?;
                         preserve_unreadable_file = false;
                     }
-                    save(&root, language)
+                    save(&root, language, enabled)
                 })();
                 let mut state = shared.lock().expect("settings lock");
                 if state.generation == generation {
@@ -77,6 +82,32 @@ impl SettingsStore {
             let _ = worker.join();
         }
     }
+
+    fn change(&self, language: Option<Language>, enabled: Option<bool>) {
+        let mut state = self.state.lock().expect("settings lock");
+        if let Some(language) = language {
+            state.view.language = language;
+        }
+        if let Some(enabled) = enabled {
+            state.view.voice_wake_enabled = enabled;
+        }
+        state.generation += 1;
+        state.view.saving = true;
+        state.view.error = None;
+        let writer = self.writer.lock().expect("settings writer lock");
+        if writer.as_ref().is_none_or(|sender| {
+            sender
+                .send((
+                    state.generation,
+                    state.view.language,
+                    state.view.voice_wake_enabled,
+                ))
+                .is_err()
+        }) {
+            state.view.saving = false;
+            state.view.error = Some("Settings writer has stopped.".into());
+        }
+    }
 }
 
 impl SettingsService for SettingsStore {
@@ -85,19 +116,11 @@ impl SettingsService for SettingsStore {
     }
 
     fn set_language(&self, language: Language) {
-        let mut state = self.state.lock().expect("settings lock");
-        state.view.language = language;
-        state.generation += 1;
-        state.view.saving = true;
-        state.view.error = None;
-        let writer = self.writer.lock().expect("settings writer lock");
-        if writer
-            .as_ref()
-            .is_none_or(|sender| sender.send((state.generation, language)).is_err())
-        {
-            state.view.saving = false;
-            state.view.error = Some("Settings writer has stopped.".into());
-        }
+        self.change(Some(language), None);
+    }
+
+    fn set_voice_wake_enabled(&self, enabled: bool) {
+        self.change(None, Some(enabled));
     }
 }
 
@@ -107,10 +130,12 @@ impl Drop for SettingsStore {
     }
 }
 
-fn load(root: &Path) -> Result<Language> {
+fn load(root: &Path) -> Result<(Language, bool)> {
     let bytes = match fs::read(root.join("settings.json")) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Language::default()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Ok((Language::default(), false));
+        }
         Err(error) => return Err(error.into()),
     };
     let saved: SavedSettings =
@@ -121,11 +146,12 @@ fn load(root: &Path) -> Result<Language> {
             saved.version
         );
     }
-    Language::from_code(&saved.language)
-        .context("Unsupported interface language. The file has been preserved.")
+    let language = Language::from_code(&saved.language)
+        .context("Unsupported interface language. The file has been preserved.")?;
+    Ok((language, saved.voice_wake_enabled))
 }
 
-fn save(root: &Path, language: Language) -> Result<()> {
+fn save(root: &Path, language: Language, voice_wake_enabled: bool) -> Result<()> {
     fs::create_dir_all(root)?;
     let temporary = root.join(format!(
         "settings-{}.pending",
@@ -143,6 +169,7 @@ fn save(root: &Path, language: Language) -> Result<()> {
         file.write_all(&serde_json::to_vec_pretty(&SavedSettings {
             version: 1,
             language: language.code().into(),
+            voice_wake_enabled,
         })?)?;
         file.sync_all()?;
         fs::rename(&temporary, root.join("settings.json"))?;
@@ -180,7 +207,7 @@ mod tests {
         assert_eq!(reopened.snapshot().language, Language::English);
         reopened.set_language(Language::SimplifiedChinese);
         drop(reopened); // Drop also flushes the last choice.
-        assert_eq!(load(&root).unwrap(), Language::SimplifiedChinese);
+        assert_eq!(load(&root).unwrap().0, Language::SimplifiedChinese);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -218,5 +245,28 @@ mod tests {
         assert!(!snapshot.saving);
         assert!(snapshot.error.is_some());
         fs::remove_file(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_settings_default_voice_off_and_preference_changes_preserve_each_other() {
+        let root = directory();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("settings.json"),
+            r#"{"version":1,"language":"en"}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(root.clone());
+        assert!(!store.snapshot().voice_wake_enabled);
+        store.set_voice_wake_enabled(true);
+        store.set_language(Language::SimplifiedChinese);
+        store.shutdown();
+        assert_eq!(load(&root).unwrap(), (Language::SimplifiedChinese, true));
+        let reopened = SettingsStore::new(root.clone());
+        reopened.set_language(Language::English);
+        reopened.set_voice_wake_enabled(false);
+        reopened.shutdown();
+        assert_eq!(load(&root).unwrap(), (Language::English, false));
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -105,6 +105,152 @@ impl SettingsService for TestSettings {
     fn set_language(&self, language: Language) {
         self.0.lock().unwrap().language = language;
     }
+    fn set_voice_wake_enabled(&self, enabled: bool) {
+        self.0.lock().unwrap().voice_wake_enabled = enabled;
+    }
+}
+
+struct TestVoiceWake {
+    state: Mutex<relay_core::voice::VoiceSnapshot>,
+    settings: Arc<TestSettings>,
+    retries: std::sync::atomic::AtomicUsize,
+}
+impl relay_core::voice::VoiceService for TestVoiceWake {
+    fn snapshot(&self) -> relay_core::voice::VoiceSnapshot {
+        self.state.lock().unwrap().clone()
+    }
+    fn set_enabled(&self, enabled: bool) {
+        let mut state = self.state.lock().unwrap();
+        state.enabled = enabled;
+        state.status = if enabled {
+            relay_core::voice::VoiceStatus::Listening
+        } else {
+            relay_core::voice::VoiceStatus::Off
+        };
+        self.settings.set_voice_wake_enabled(enabled);
+    }
+    fn retry(&self) {
+        self.retries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.state.lock().unwrap().status = relay_core::voice::VoiceStatus::Listening;
+    }
+    fn resume_listening(&self, _: u64) {}
+    fn choose_project(&self, _: u64, _: u64, _: relay_core::routing::RouteTarget) {}
+    fn start_session(&self) {
+        use relay_core::voice::*;
+        let mut state = self.state.lock().unwrap();
+        state.status = VoiceStatus::Capturing;
+        state.session = Some(VoiceSessionSnapshot {
+            id: 1,
+            transcription: TranscriptionStatus::NotConfigured,
+            transcript: String::new(),
+            transcript_truncated: false,
+            captured_segments: 0,
+            pending_segments: 0,
+            turn: None,
+        });
+    }
+    fn end_session(&self, _: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.status = relay_core::voice::VoiceStatus::Listening;
+        state.session = None;
+    }
+}
+
+#[gpui_kit::test]
+fn voice_settings_toggle_retry_and_permission_link_preserve_drafts(cx: &mut TestAppContext) {
+    use gpui_kit::{component::Root, px, size, test::TestWindowExt};
+    use relay_core::voice::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    cx.update(gpui_kit::init);
+    for language in [Language::SimplifiedChinese, Language::English] {
+        let agents = Arc::new(TestAgents::default());
+        let settings = Arc::new(TestSettings::default());
+        settings.set_language(language);
+        let voice = Arc::new(TestVoiceWake {
+            state: Mutex::new(VoiceSnapshot::default()),
+            settings: settings.clone(),
+            retries: AtomicUsize::new(0),
+        });
+        let permission_links = Arc::new(AtomicUsize::new(0));
+        let view_cell = std::cell::RefCell::new(None);
+        let window = cx.add_window(|window, cx| {
+            let view = cx.new(|cx| {
+                Workbench::new(
+                    agents.clone(),
+                    settings.clone(),
+                    Arc::new(TestProjects::default()),
+                    Arc::new(TestRouting),
+                    window,
+                    cx,
+                )
+            });
+            view.update(cx, |view, cx| {
+                window.resize(size(px(1_100.), px(1_300.)));
+                window.bounds_changed(cx);
+                view.drafts[0].update(cx, |draft, cx| draft.set_value("Keep my draft", window, cx));
+                view.set_voice_service(voice.clone(), cx);
+                view.navigate(Page::Settings, window, cx);
+                let links = permission_links.clone();
+                view._subscriptions.push(cx.subscribe(
+                    &cx.entity(),
+                    move |_, _, _: &super::OpenMicrophoneSettings, _| {
+                        links.fetch_add(1, Ordering::Relaxed);
+                    },
+                ));
+            });
+            *view_cell.borrow_mut() = Some(view.clone());
+            Root::new(view, window, cx)
+        });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.find("voice-wake-toggle").visible(),
+                "toggle bounds: {:?}, viewport: {:?}",
+                window.find("voice-wake-toggle").bounds(),
+                window.viewport_size()
+            );
+            window.click("voice-wake-toggle", cx);
+        })
+        .unwrap();
+        assert!(settings.snapshot().voice_wake_enabled);
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("start-voice-session").visible());
+            window.click("start-voice-session", cx);
+        })
+        .unwrap();
+        assert!(voice.snapshot().session.is_some());
+        voice.end_session(1);
+        voice.state.lock().unwrap().status = VoiceStatus::Failed(VoiceError::new(
+            VoiceErrorKind::MicrophoneDenied,
+            "native diagnostic",
+        ));
+        cx.run_until_parked();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("microphone-settings").visible());
+            window.click("microphone-settings", cx);
+            window.click("retry-voice-wake", cx);
+            window.render_frame(cx);
+            window.click("voice-wake-toggle", cx);
+        })
+        .unwrap();
+        assert_eq!(permission_links.load(Ordering::Relaxed), 1);
+        assert_eq!(voice.retries.load(Ordering::Relaxed), 1);
+        assert!(!settings.snapshot().voice_wake_enabled);
+        cx.update(|cx| {
+            let cell = view_cell.borrow();
+            let view = cell.as_ref().unwrap().read(cx);
+            assert_eq!(view.drafts[0].read(cx).value().as_ref(), "Keep my draft");
+            assert_eq!(view.settings_snapshot.language, language);
+            assert_eq!(view.voice_snapshot.status, VoiceStatus::Off);
+        });
+        assert!(agents.0.lock().unwrap().is_empty());
+    }
 }
 
 #[gpui_kit::test]

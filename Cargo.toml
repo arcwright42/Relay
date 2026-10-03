@@ -17,11 +17,17 @@ async-channel = "=2.5.0"
 async-io = "=2.6.0"
 dotenvy = "=0.15.7"
 futures-lite = "=2.6.1"
+futures-util = { version = "=0.3.34", features = ["sink"] }
+tokio = { version = "=1.53.1", features = ["rt", "time", "net", "macros"] }
+tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"] }
+uuid = { version = "=1.26.1", features = ["v4"] }
 gpui-kit = "=0.6.6"
 block2 = "=0.6.2"
+cpal = "=0.16.0"
 objc2 = "=0.6.4"
+objc2-av-foundation = { version = "=0.3.2", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSPanel", "NSScreen", "NSResponder", "NSPasteboard", "NSPasteboardItem", "NSWorkspace", "NSRunningApplication", "libc", "NSEvent", "block2"] }
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSGeometry", "NSEnumerator", "NSData"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSGeometry", "NSEnumerator", "NSData", "NSProcessInfo"] }
 relay-acp = { path = "crates/relay-acp", version = "=0.1.0" }
 relay-core = { path = "crates/relay-core", version = "=0.1.0" }
 relay-runtime = { path = "crates/relay-runtime", version = "=0.1.0" }
@@ -32,6 +38,7 @@ serde_json = "=1.0.151"
 sha2 = "=0.11.0"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "json"] }
 security-framework = "=3.7.0"
+sherpa-onnx = { version = "=1.13.8", default-features = false, features = ["static"] }
 
 # Keep Inspector controls clickable while selecting an element; see vendor/README.md.
 [patch.crates-io]

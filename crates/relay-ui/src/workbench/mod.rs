@@ -10,6 +10,8 @@ mod quick;
 pub use quick::{OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick};
 mod routing;
 mod sessions;
+mod voice;
+pub use voice::OpenMicrophoneSettings;
 #[cfg(test)]
 mod tests;
 
@@ -32,6 +34,7 @@ use relay_core::{
     routing::RoutingService,
     sessions::{ClientSessionsService, ClientSessionsSnapshot, EmptyClientSessions},
     settings::{Language, SettingsService, SettingsSnapshot},
+    voice::{EmptyVoiceService, VoiceService, VoiceSnapshot},
 };
 use std::{sync::Arc, time::Duration};
 
@@ -117,6 +120,8 @@ pub struct Workbench {
     project_saving: bool,
     settings_service: Arc<dyn SettingsService>,
     settings_snapshot: SettingsSnapshot,
+    voice_service: Arc<dyn VoiceService>,
+    voice_snapshot: VoiceSnapshot,
     routing_service: Arc<dyn RoutingService>,
     routing: routing::RoutingUi,
     page: Page,
@@ -237,6 +242,11 @@ impl Workbench {
                             this.settings_snapshot = settings;
                             cx.notify();
                         }
+                        let voice = this.voice_service.snapshot();
+                        if this.voice_snapshot != voice {
+                            this.voice_snapshot = voice;
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -252,6 +262,8 @@ impl Workbench {
             project_saving: false,
             settings_service,
             settings_snapshot,
+            voice_service: Arc::new(EmptyVoiceService),
+            voice_snapshot: VoiceSnapshot::default(),
             routing_service,
             routing,
             page: Page::Home,

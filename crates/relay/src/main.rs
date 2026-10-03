@@ -1,15 +1,18 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
-use relay_core::{ProjectId, capture::Selection, settings::SettingsService};
+use relay_core::{ProjectId, capture::Selection, settings::SettingsService, voice::VoiceService};
 use relay_runtime::{
-    AgentRuntime, ClientSessionStore, FileStore, JevRouter, MoliFetcher, ProjectStore,
-    SettingsStore,
+    AgentRuntime, BundledWakeResources, ClientSessionStore, FileStore, JevRouter, MoliFetcher,
+    ProjectStore, ProjectVoiceDialogue, SettingsStore, VoiceRuntime,
 };
 use relay_ui::{
-    FocusSearch, OpenAgentSettings, OpenProject, OpenQuick, OpenWorkspace, Quit,
-    RequestAccessibility, ResizeQuick, SaveFile, SendMessage, Workbench, apply_language,
+    EndVoiceSession, FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenProject,
+    OpenQuick, OpenWorkspace, Quit, RequestAccessibility, ResizeQuick, SaveFile, SendMessage,
+    VoicePanel, Workbench, apply_language,
 };
 use std::sync::Arc;
+mod routing_cli;
+mod voice_cli;
 
 #[derive(Clone)]
 struct Services {
@@ -20,11 +23,13 @@ struct Services {
     fetcher: Arc<MoliFetcher>,
     client_sessions: Arc<ClientSessionStore>,
     files: Arc<FileStore>,
+    voice: Arc<VoiceRuntime>,
 }
 struct Desktop {
     services: Services,
     workspace: Option<(WindowHandle<Root>, Entity<Workbench>)>,
     quick: Option<(WindowHandle<Root>, Entity<Workbench>)>,
+    voice_panel: Option<(WindowHandle<Root>, u64)>,
     shortcut_error: Option<String>,
     quick_dismiss: Option<relay_platform::QuickDismissMonitor>,
 }
@@ -65,6 +70,54 @@ fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
         });
     }
     open_window(true, selection, project, anchor, cx);
+}
+
+fn open_voice_session(cx: &mut App) {
+    if cx.global::<Desktop>().voice_panel.is_some() {
+        return;
+    }
+    let services = cx.global::<Desktop>().services.clone();
+    let Some(session) = services.voice.snapshot().session else {
+        return;
+    };
+    let bounds = Bounds::centered(None, size(px(480.), px(540.)), cx);
+    match cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: None,
+            kind: WindowKind::PopUp,
+            window_min_size: Some(size(px(480.), px(540.))),
+            window_background: WindowBackgroundAppearance::Blurred,
+            is_resizable: false,
+            focus: true,
+            ..Default::default()
+        },
+        |window, cx| {
+            window.set_window_title("Relay Voice");
+            let panel = cx.new(|cx| {
+                VoicePanel::new(
+                    services.voice.clone(),
+                    services.settings.clone(),
+                    window,
+                    cx,
+                )
+            });
+            cx.subscribe(&panel, |_, event: &OpenProject, cx| {
+                open_workspace(event.0, cx);
+            })
+            .detach();
+            cx.new(|cx| Root::new(panel, window, cx))
+        },
+    ) {
+        Ok(handle) => {
+            cx.global_mut::<Desktop>().voice_panel = Some((handle, session.id));
+            cx.activate(true);
+        }
+        Err(error) => {
+            eprintln!("Could not open voice session: {error}");
+            services.voice.end_session(session.id);
+        }
+    }
 }
 fn open_window(
     quick: bool,
@@ -140,6 +193,7 @@ fn open_window(
                 );
                 view.set_client_session_service(services.client_sessions, cx);
                 view.set_file_service(services.files, cx);
+                view.set_voice_service(services.voice, cx);
                 if quick {
                     view.capture(selection, services.fetcher, window, cx);
                 }
@@ -168,6 +222,12 @@ fn open_window(
                 relay_platform::request_accessibility();
                 cx.open_url(
                     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                );
+            })
+            .detach();
+            cx.subscribe(&view, |_, _: &OpenMicrophoneSettings, cx| {
+                cx.open_url(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
                 );
             })
             .detach();
@@ -242,11 +302,30 @@ fn main() {
         std::process::exit(2);
     }
     let directory = AgentRuntime::default_directory();
+    if routing_cli::run(&directory) || voice_cli::run(&directory) {
+        return;
+    }
     let settings = Arc::new(SettingsStore::new(directory.clone()));
     let projects = Arc::new(ProjectStore::new(directory.clone()));
     let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
     let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
     let files = Arc::new(FileStore::new(directory.clone()));
+    let speech = Arc::new(relay_runtime::QwenSpeech::new(
+        &directory,
+        Arc::new(relay_platform::MacAudioOutput),
+    ));
+    let voice = Arc::new(VoiceRuntime::with_pipeline(
+        settings.clone(),
+        Arc::new(BundledWakeResources::discover()),
+        Arc::new(relay_platform::MacVoiceBackend),
+        speech.clone(),
+        Arc::new(ProjectVoiceDialogue::new(
+            routing.clone(),
+            projects.clone(),
+            agents.clone(),
+        )),
+        speech,
+    ));
     let client_sessions = Arc::new(ClientSessionStore::new(
         directory.clone(),
         projects.clone(),
@@ -260,6 +339,7 @@ fn main() {
         fetcher: Arc::new(MoliFetcher::new(&directory)),
         client_sessions: client_sessions.clone(),
         files,
+        voice: voice.clone(),
     };
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
     application.on_reopen(|cx| open_workspace(None, cx));
@@ -274,11 +354,13 @@ fn main() {
             services,
             workspace: None,
             quick: None,
+            voice_panel: None,
             shortcut_error: shortcut.as_ref().err().cloned(),
             quick_dismiss: None,
         });
         cx.bind_keys([
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("escape", EndVoiceSession, Some("VoiceSession")),
             KeyBinding::new("cmd-k", FocusSearch, None),
             KeyBinding::new("cmd-enter", SendMessage, None),
             KeyBinding::new("cmd-s", SaveFile, None),
@@ -289,6 +371,24 @@ fn main() {
         cx.on_action(|_: &OpenQuick, cx| {
             open_quick(Selection::default(), relay_platform::pointer_position(), cx)
         });
+        let shutdown_voice = voice.clone();
+        cx.on_app_quit(move |cx| {
+            let voice = shutdown_voice.clone();
+            cx.background_executor().spawn(async move {
+                voice.shutdown();
+            })
+        })
+        .detach();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |cx| {
+            loop {
+                executor.timer(std::time::Duration::from_millis(50)).await;
+                if voice.snapshot().session.is_some() {
+                    cx.update(open_voice_session);
+                }
+            }
+        })
+        .detach();
         cx.on_app_quit(move |cx| {
             let fetcher = shutdown_fetcher.clone();
             cx.background_executor().spawn(async move {
@@ -319,6 +419,16 @@ fn main() {
         .detach();
         // Deliberately keep the application alive when the last window closes.
         cx.on_window_closed(|cx, closed| {
+            if cx
+                .global::<Desktop>()
+                .voice_panel
+                .is_some_and(|(handle, _)| handle.window_id() == closed)
+            {
+                let desktop = cx.global_mut::<Desktop>();
+                if let Some((_, session_id)) = desktop.voice_panel.take() {
+                    desktop.services.voice.end_session(session_id);
+                }
+            }
             eprintln!("quick: window closed {closed:?}");
             let desktop = cx.global_mut::<Desktop>();
             if desktop

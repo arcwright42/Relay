@@ -1,0 +1,6 @@
+h ēi R IY1 L EY2 :1.0 #0.25 @hey_relay
+h ēi R IY1 L EY1 :1.0 #0.25 @hey_relay
+h ēi R IY0 L EY1 :1.0 #0.25 @hey_relay
+HH EY1 R IY1 L EY2 :1.0 #0.25 @hey_relay
+HH EY1 R IY1 L EY1 :1.0 #0.25 @hey_relay
+HH EY1 R IY0 L EY1 :1.0 #0.25 @hey_relay

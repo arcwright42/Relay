@@ -46,6 +46,22 @@ pub struct JevRouter {
     endpoint_override: Option<String>,
 }
 
+/// Headless credential setup uses the same provider-bound Keychain record as Settings.
+/// No project or Agent runtime needs to be constructed just to save a credential.
+pub fn save_routing_key(
+    root: &Path,
+    provider: RoutingProvider,
+    key: &str,
+) -> Result<(), RoutingError> {
+    if credentials::openrouter_configuration()?.is_some() {
+        return Err(RoutingError::ExternallyConfigured);
+    }
+    Keychain::new(root).write(Some(&Credential {
+        provider,
+        key: credentials::validate_key(key)?.to_owned(),
+    }))
+}
+
 impl JevRouter {
     pub fn new(
         root: &Path,

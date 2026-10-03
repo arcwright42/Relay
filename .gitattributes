@@ -1,3 +1,6 @@
 # Keep the upstream snapshot intact and focus reviews on Relay's documented patch.
 vendor/gpui-pre/** linguist-vendored -whitespace
 vendor/gpui-pre-inspector.patch -whitespace
+
+# Preserve the exact bytes of the checksum-pinned upstream voice notices.
+crates/relay-runtime/resources/voice/licenses/** linguist-vendored -whitespace

@@ -189,6 +189,7 @@ impl Workbench {
                     self.text(Text::Light),
                     "",
                 ))
+                .child(self.voice_settings(cx))
                 .child(self.routing_settings(cx))
                 .child(Self::setting_row(
                     self.text(Text::Workspace),

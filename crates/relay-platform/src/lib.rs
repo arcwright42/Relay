@@ -18,3 +18,8 @@ pub use panel::{
 mod dismiss;
 #[cfg(target_os = "macos")]
 pub use dismiss::QuickDismissMonitor;
+
+#[cfg(target_os = "macos")]
+mod voice;
+#[cfg(target_os = "macos")]
+pub use voice::{MacAudioOutput, MacSpeechOutput, MacVoiceBackend, probe_wake_file};
