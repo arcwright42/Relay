@@ -1,5 +1,6 @@
 //! Render real views with fixtures through Metal, without desktop automation
 //! or a live agent. Add `--workspace` after the output folder for main app pages.
+//! `--memory-only` limits those pages; `--pending` and `--english` vary memory fixtures.
 use gpui_kit::{
     assets::AllAssets,
     component::{Root, Theme, ThemeMode},
@@ -9,6 +10,10 @@ use gpui_kit::{
 use relay_core::{Thread, ThreadId, agents::*, capture::*, settings::*, threads::*};
 use relay_ui::{ResizeQuick, Workbench};
 use std::sync::{Arc, Mutex};
+
+#[path = "fixtures/memory.rs"]
+mod memory_fixture;
+use memory_fixture::MemoryFixtures;
 
 struct SessionFixtures;
 impl relay_core::sessions::ClientSessionsService for SessionFixtures {
@@ -24,7 +29,6 @@ impl relay_core::sessions::ClientSessionsService for SessionFixtures {
             title: "统一本地会话与薄记忆的技术方案".into(),
             working_directory: "/Users/example/Threads/Relay".into(),
             source: "/Users/example/.codex/sessions/2026/09/30/rollout.jsonl".into(),
-            thread: Some(ThreadId(1)),
             updated_at: "2026-09-30T00:00:00Z".into(),
             message_count: 2,
             available: true,
@@ -33,7 +37,6 @@ impl relay_core::sessions::ClientSessionsService for SessionFixtures {
         external.id = ClientSessionId("codex:external-session".into());
         external.native_id = "external-session".into();
         external.title = "在本地 Client 中讨论新项目".into();
-        external.thread = None;
         ClientSessionsSnapshot {
             sessions: vec![session.clone(), external], selected: Some(session.id.clone()), updated_sessions: 2, scanned_files: 2,
             detail: Some(ClientSessionDetail { session, messages: Arc::new(vec![
@@ -156,7 +159,14 @@ impl relay_core::files::FileService for FileFixtures {
 }
 impl SettingsService for Fixtures {
     fn snapshot(&self) -> SettingsSnapshot {
-        SettingsSnapshot::default()
+        SettingsSnapshot {
+            language: if std::env::args().any(|a| a == "--english") {
+                Language::English
+            } else {
+                Language::SimplifiedChinese
+            },
+            ..Default::default()
+        }
     }
     fn set_language(&self, _: Language) {}
     fn set_voice_wake_enabled(&self, _: bool) {}
@@ -301,6 +311,7 @@ fn main() -> gpui_kit::Result<()> {
 }
 
 fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
+    let pending = std::env::args().any(|a| a == "--pending");
     for (name, width, height) in [("wide", 1440., 900.), ("compact", 960., 640.)] {
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
@@ -309,11 +320,16 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
         );
         cx.update(|cx| {
             gpui_kit::init(cx);
+            cx.set_reduce_motion(true);
             Theme::change(ThemeMode::Light, None, cx);
         });
         let agents = Arc::new(FixtureAgent(
             Mutex::new(AgentSnapshot {
-                status: ConnectionStatus::Ready,
+                status: if pending {
+                    ConnectionStatus::Disconnected
+                } else {
+                    ConnectionStatus::Ready
+                },
                 ..Default::default()
             }),
             false,
@@ -322,7 +338,15 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             let view = cx.new(|cx| {
                 let mut view =
                     Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), window, cx);
-                view.set_client_session_service(Arc::new(SessionFixtures), cx);
+                view.set_memory_services(
+                    Arc::new(if pending {
+                        MemoryFixtures::pending()
+                    } else {
+                        MemoryFixtures::default()
+                    }),
+                    Arc::new(SessionFixtures),
+                    cx,
+                );
                 view.set_file_service(Arc::new(FileFixtures), cx);
                 view
             });
@@ -333,10 +357,13 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             ("thread", ElementId::from(("thread", 1_usize))),
             ("activity", ElementId::from("inbox")),
             ("agents", ElementId::from("agents")),
-            ("client-sessions", ElementId::from("client-sessions")),
+            ("memory", ElementId::from("memory-tab")),
             ("files", ElementId::from("files-tab")),
             ("settings", ElementId::from("settings")),
         ] {
+            if std::env::args().any(|a| a == "--memory-only") && page != "memory" {
+                continue;
+            }
             cx.update_window(handle.into(), |_, window, cx| {
                 window.render_frame(cx);
                 window.click(target, cx);
@@ -357,6 +384,27 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             })?;
             cx.capture_screenshot(handle.into())?
                 .save(folder.join(format!("{page}-{name}.png")))?;
+            if page == "memory" && !pending {
+                for (name_suffix, target) in [
+                    ("detail", ElementId::from(("memory-entry", 1_u64))),
+                    ("forget", ElementId::from("memory-forget")),
+                    ("cancel-forget", ElementId::from("cancel-forget-memory")),
+                    ("edit", ElementId::from("memory-edit")),
+                    ("cancel-edit", ElementId::from("memory-cancel-edit")),
+                    ("source", ElementId::from(("memory-evidence", 10_u64))),
+                    ("archive", ElementId::from("memory-open-archive")),
+                    ("topics", ElementId::from("memory-topics-tab")),
+                ] {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        window.render_frame(cx);
+                        assert!(window.try_find("client-sessions").is_none());
+                        window.click(target, cx);
+                    })?;
+                    cx.run_until_parked();
+                    cx.capture_screenshot(handle.into())?
+                        .save(folder.join(format!("memory-{name_suffix}-{name}.png")))?;
+                }
+            }
             if page == "files" {
                 for (scene, target) in [
                     ("markdown", "files-entry-项目方案.md"),

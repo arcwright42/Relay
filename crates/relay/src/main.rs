@@ -180,11 +180,11 @@ fn open_window(
                 let mut view = Workbench::new(
                     services.agents,
                     services.settings,
-                    services.threads,
+                    services.threads.clone(),
                     window,
                     cx,
                 );
-                view.set_client_session_service(services.client_sessions, cx);
+                view.set_memory_services(services.threads, services.client_sessions, cx);
                 view.set_file_service(services.files, cx);
                 view.set_voice_service(services.voice, cx);
                 if quick {
@@ -354,11 +354,7 @@ fn main() {
         Arc::new(ThreadVoiceDialogue::new(threads.clone(), agents.clone())),
         speech,
     ));
-    let client_sessions = Arc::new(ClientSessionStore::new(
-        directory.clone(),
-        threads.clone(),
-        agents.clone(),
-    ));
+    let client_sessions = Arc::new(ClientSessionStore::new(directory.clone()));
     let services = Services {
         agents: agents.clone(),
         settings: settings.clone(),

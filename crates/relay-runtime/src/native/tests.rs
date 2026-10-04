@@ -3,6 +3,238 @@ struct Sandbox {
     root: PathBuf,
     store: NativeStore,
 }
+
+#[test]
+fn memory_center_reports_real_queue_counts_and_source_failures() {
+    use relay_core::memory::*;
+    let s = Sandbox::new();
+    let first = s
+        .store
+        .ingest("history:1", None, "client:codex:one", "First", "原始会话一")
+        .unwrap();
+    let second = s
+        .store
+        .ingest(
+            "history:2",
+            None,
+            "client:codex:two",
+            "Second",
+            "原始会话二",
+        )
+        .unwrap();
+    let view = MemoryService::overview(&s.store, &MemoryQuery::default()).unwrap();
+    assert_eq!(
+        (
+            view.progress.sessions,
+            view.progress.sources,
+            view.progress.pending
+        ),
+        (2, 2, 2)
+    );
+    assert!(view.memories.is_empty());
+    assert!(view.topics.is_empty());
+    s.store
+        .db
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE jobs SET state='failed',attempts=3,error='model timeout' WHERE source_id=?",
+            [first],
+        )
+        .unwrap();
+    let job = s.store.claim_job().unwrap().unwrap();
+    assert_eq!(job["source_id"], second);
+    s.store
+        .commit_job(
+            job["job_id"].as_u64().unwrap(),
+            job["attempt"].as_u64().unwrap(),
+            &[],
+        )
+        .unwrap();
+    let view = MemoryService::overview(&s.store, &MemoryQuery::default()).unwrap();
+    assert_eq!(
+        (
+            view.progress.pending,
+            view.progress.done,
+            view.progress.failed
+        ),
+        (0, 1, 1)
+    );
+    assert!(
+        view.memories.is_empty(),
+        "A processed source does not imply an extracted memory"
+    );
+    assert_eq!(view.failures[0].error.as_deref(), Some("model timeout"));
+    MemoryService::apply(&s.store, MemoryCommand::SetEnabled(false)).unwrap();
+    MemoryService::apply(&s.store, MemoryCommand::RetryFailed).unwrap();
+    let view = MemoryService::overview(&s.store, &MemoryQuery::default()).unwrap();
+    assert!(!view.progress.enabled);
+    assert_eq!((view.progress.pending, view.progress.failed), (1, 0));
+    assert!(s.store.claim_job().unwrap().is_none());
+    assert!(
+        MemoryService::source(&s.store, first, 0).is_ok(),
+        "Pausing keeps provenance readable"
+    );
+}
+
+#[test]
+fn user_memory_review_preserves_evidence_and_rejects_stale_revisions() {
+    use relay_core::memory::*;
+    let s = Sandbox::new();
+    let source = s
+        .store
+        .ingest("review", Some(MAIN), "relay", "Decision", "先评估方案")
+        .unwrap();
+    let mut candidate = note(source, "先评估，再实施");
+    candidate["status"] = json!("candidate");
+    let id = s.store.write_memory(MAIN, &candidate).unwrap();
+    let confirmed = MemoryService::apply(&s.store, MemoryCommand::Confirm(id))
+        .unwrap()
+        .unwrap();
+    assert_ne!(confirmed, id);
+    assert!(MemoryService::detail(&s.store, id).is_err());
+    let detail = MemoryService::detail(&s.store, confirmed).unwrap();
+    assert_eq!(detail.entry.status, "confirmed");
+    assert_eq!(detail.evidence[0].id, source);
+    let revised = MemoryService::apply(
+        &s.store,
+        MemoryCommand::Revise {
+            id: confirmed,
+            title: "用户修订".into(),
+            body: "先验证，再评估实施范围".into(),
+        },
+    )
+    .unwrap()
+    .unwrap();
+    let detail = MemoryService::detail(&s.store, revised).unwrap();
+    assert_eq!(detail.body, "先验证，再评估实施范围");
+    assert_eq!(detail.evidence[0].revision, 1);
+    assert!(
+        s.store
+            .search(MAIN, "先评估，再实施", false)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    s.store
+        .ingest("review", Some(MAIN), "relay", "Changed", "计划已改变")
+        .unwrap();
+    assert!(MemoryService::apply(&s.store, MemoryCommand::Confirm(revised)).is_err());
+    assert!(MemoryService::detail(&s.store, revised).is_err());
+    assert_eq!(
+        MemoryService::overview(&s.store, &MemoryQuery::default())
+            .unwrap()
+            .progress
+            .confirmed,
+        0
+    );
+}
+
+#[test]
+fn memory_center_pages_sources_and_filters_cross_session_topics_without_rebinding() {
+    use relay_core::memory::*;
+    let s = Sandbox::new();
+    for i in 0..31 {
+        let source = s
+            .store
+            .ingest(
+                &format!("source:{i}"),
+                None,
+                &format!("client:codex:session-{i}"),
+                &format!("Session {i}"),
+                &format!("source contents {i}"),
+            )
+            .unwrap();
+        let mut n = note(source, &format!("body {i}"));
+        n["topics"] = json!(if i < 2 { vec!["shared"] } else { vec!["other"] });
+        s.store.write_memory(MAIN, &n).unwrap();
+    }
+    let first = MemoryService::overview(&s.store, &MemoryQuery::default()).unwrap();
+    assert_eq!(first.memories.len(), 25);
+    assert_eq!(first.sources.len(), 25);
+    let second = MemoryService::overview(
+        &s.store,
+        &MemoryQuery {
+            before_memory: first.next_memory,
+            before_source: first.next_source,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((second.memories.len(), second.sources.len()), (6, 6));
+    assert!(second.next_memory.is_none());
+    assert!(
+        second
+            .memories
+            .iter()
+            .all(|m| first.memories.iter().all(|f| f.id != m.id))
+    );
+    let topic = MemoryService::overview(
+        &s.store,
+        &MemoryQuery {
+            topic: Some("shared".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(topic.memories.len(), 2);
+    assert_eq!(topic.sources.len(), 2);
+    assert_eq!(
+        topic
+            .topics
+            .iter()
+            .find(|t| t.name == "shared")
+            .unwrap()
+            .sessions,
+        2
+    );
+    MemoryService::apply(&s.store, MemoryCommand::ForgetSource(topic.sources[0].id)).unwrap();
+    let topic = MemoryService::overview(
+        &s.store,
+        &MemoryQuery {
+            topic: Some("shared".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((topic.memories.len(), topic.sources.len()), (1, 1));
+    assert_eq!(s.store.snapshot().threads.len(), 1);
+}
+
+#[test]
+fn memory_source_reader_pages_full_text_and_keeps_original_archive_identity() {
+    use relay_core::memory::*;
+    let s = Sandbox::new();
+    let original = "记".repeat(15000);
+    let source = s
+        .store
+        .ingest(
+            "archive:source",
+            None,
+            "client:codex:original-id",
+            "Archive",
+            &json!([{"role":"user","text":original}]).to_string(),
+        )
+        .unwrap();
+    let first = MemoryService::source(&s.store, source, 0).unwrap();
+    assert_eq!(first.archive.unwrap().0, "codex:original-id");
+    let second = MemoryService::source(&s.store, source, first.next_offset.unwrap()).unwrap();
+    assert_eq!(first.body + &second.body, format!("user\n{original}"));
+    assert!(second.next_offset.is_none());
+    MemoryService::apply(&s.store, MemoryCommand::ForgetSource(source)).unwrap();
+    assert!(MemoryService::source(&s.store, source, 0).is_err());
+    s.store
+        .ingest(
+            "archive:source",
+            None,
+            "client:codex:original-id",
+            "Archive",
+            "reimport",
+        )
+        .unwrap();
+    assert!(MemoryService::source(&s.store, source, 0).is_err());
+}
 impl Sandbox {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("relay-native-test-{}", uuid::Uuid::new_v4()));

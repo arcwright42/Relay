@@ -365,6 +365,11 @@ fn poll_observer(
     if state.status == ConnectionStatus::Failed
         || state.status == ConnectionStatus::NeedsAuthentication
     {
+        *store.observer_error.lock().expect("observer health") = Some(
+            state
+                .error
+                .unwrap_or_else(|| "Memory observer requires authentication".into()),
+        );
         agents.reset_observer();
         *retry = Instant::now() + Duration::from_secs(60);
         return Ok(());
@@ -374,6 +379,7 @@ fn poll_observer(
             OBSERVER,
             AgentCommand::Connect(agents.snapshot(MAIN).source),
         ) {
+            *store.observer_error.lock().expect("observer health") = Some(e.clone());
             *retry = Instant::now() + Duration::from_secs(60);
             return Err(anyhow::Error::msg(e));
         }
@@ -396,7 +402,10 @@ fn poll_observer(
             json!(topics)
         );
         match agents.send_turn(OBSERVER, prompt) {
-            Ok(response) => *current = Some((id, attempt, response, Instant::now())),
+            Ok(response) => {
+                *store.observer_error.lock().expect("observer health") = None;
+                *current = Some((id, attempt, response, Instant::now()));
+            }
             Err(e) => {
                 store.db.lock().expect("native store").execute("UPDATE jobs SET state=CASE WHEN attempts>=3 THEN 'failed' ELSE 'pending' END,lease_until=NULL,error=? WHERE id=? AND attempts=? AND state='running'",params![e,id,attempt])?;
                 agents.reset_observer();

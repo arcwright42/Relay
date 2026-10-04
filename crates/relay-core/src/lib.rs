@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod capture;
 pub mod files;
+pub mod memory;
 pub mod sessions;
 pub mod settings;
 pub mod threads;

@@ -3,6 +3,7 @@ mod capture;
 mod mcp;
 mod memory;
 mod migration;
+mod presentation;
 #[cfg(test)]
 mod tests;
 mod topics;
@@ -23,6 +24,7 @@ pub struct NativeStore {
     pub(crate) db: Mutex<Connection>,
     cache: Mutex<ThreadCatalog>,
     activity: Mutex<Vec<TaskActivity>>,
+    observer_error: Mutex<Option<String>>,
     root: PathBuf,
 }
 
@@ -60,6 +62,7 @@ impl NativeStore {
             db: Mutex::new(db),
             cache: Mutex::new(ThreadCatalog::default()),
             activity: Mutex::new(vec![]),
+            observer_error: Mutex::new(None),
             root,
         };
         store.refresh()?;

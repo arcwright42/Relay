@@ -100,7 +100,7 @@ cargo xtask start
 
 对外分发所需的 notarization 和更新机制尚未接入。构建产物、编辑器配置、本机签名身份与日志不进入 Git。
 
-本地 Client 会话归档属于 relay-runtime，UI 通过 relay-core::sessions 的修订快照和命令访问。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [本地会话中心](CLIENT-SESSIONS.md)。
+本地 Client 会话归档属于 relay-runtime，后台归档使用 relay-core::sessions 的快照和只读打开/同步命令，记忆页面通过 relay-core::memory 读取原生状态并审核记录。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [归档与记忆入口](CLIENT-SESSIONS.md)。
 
 ## 原生记忆和任务
 

@@ -4,7 +4,7 @@ mod codex;
 mod tests;
 
 use anyhow::{Context, Result, bail, ensure};
-use relay_core::{ThreadId, agents::AgentService, sessions::*, threads::ThreadService};
+use relay_core::sessions::*;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -26,8 +26,6 @@ struct SavedSession {
     title: String,
     working_directory: PathBuf,
     source: PathBuf,
-    #[serde(default, alias = "project")]
-    thread: Option<u64>,
     updated_at: String,
     message_count: usize,
     available: bool,
@@ -46,7 +44,6 @@ impl SavedSession {
             title: self.title.clone(),
             working_directory: self.working_directory.clone(),
             source: self.source.clone(),
-            thread: self.thread.map(ThreadId),
             updated_at: self.updated_at.clone(),
             message_count: self.message_count,
             available: self.available,
@@ -74,8 +71,6 @@ struct Archive {
 struct Index {
     version: u32,
     sessions: BTreeMap<String, SavedSession>,
-    #[serde(default)]
-    bindings: BTreeMap<String, Option<u64>>,
     last_sync_unix: Option<u64>,
 }
 
@@ -84,7 +79,6 @@ impl Default for Index {
         Self {
             version: 1,
             sessions: BTreeMap::new(),
-            bindings: BTreeMap::new(),
             last_sync_unix: None,
         }
     }
@@ -132,25 +126,16 @@ pub struct ClientSessionStore {
 }
 
 impl ClientSessionStore {
-    pub fn new(
-        root: PathBuf,
-        threads: Arc<dyn ThreadService>,
-        agents: Arc<dyn AgentService>,
-    ) -> Self {
+    pub fn new(root: PathBuf) -> Self {
         let home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".codex")
             });
-        Self::with_home(root, home, threads, agents)
+        Self::with_home(root, home)
     }
 
-    fn with_home(
-        root: PathBuf,
-        home: PathBuf,
-        threads: Arc<dyn ThreadService>,
-        agents: Arc<dyn AgentService>,
-    ) -> Self {
+    fn with_home(root: PathBuf, home: PathBuf) -> Self {
         let directory = root.join("client-sessions");
         let loaded = load_index(&directory);
         let blocked = loaded.as_ref().err().map(|error| {
@@ -193,25 +178,18 @@ impl ClientSessionStore {
                     state.update(|v| {
                         v.error = Some(error.clone());
                         v.syncing = false;
-                        v.saving = false;
                     });
                     next_sync = Instant::now() + Duration::from_secs(CLIENT_SYNC_INTERVAL_SECS);
                     continue;
                 }
                 let is_sync = matches!(command, ClientSessionsCommand::Sync);
                 let result = match command {
-                    ClientSessionsCommand::Sync => {
-                        sync(&directory, &home, &mut index, &threads, &agents, &state)
-                    }
+                    ClientSessionsCommand::Sync => sync(&directory, &home, &mut index, &state),
                     ClientSessionsCommand::Open(id) => open(&directory, &index, &id, &state),
-                    ClientSessionsCommand::Assign { session, thread } => {
-                        assign(&directory, &mut index, &session, thread, &threads, &state)
-                    }
                 };
                 if let Err(error) = result {
                     state.update(|v| {
                         v.error = Some(format!("{error:#}"));
-                        v.saving = false;
                     });
                 }
                 if is_sync {
@@ -267,10 +245,6 @@ impl ClientSessionsService for ClientSessionStore {
                 view.selected = Some(id.clone());
                 view.detail = None;
             }
-            ClientSessionsCommand::Assign { .. } if view.saving => {
-                return Err("Wait for the current assignment to finish.".into());
-            }
-            ClientSessionsCommand::Assign { .. } => view.saving = true,
         }
         view.error = None;
         self.shared.revision.fetch_add(1, Ordering::Release);
@@ -377,48 +351,7 @@ fn open(directory: &Path, index: &Index, id: &ClientSessionId, shared: &Shared) 
     Ok(())
 }
 
-fn assign(
-    directory: &Path,
-    index: &mut Index,
-    id: &ClientSessionId,
-    thread: Option<ThreadId>,
-    threads: &Arc<dyn ThreadService>,
-    shared: &Shared,
-) -> Result<()> {
-    ensure!(
-        thread.is_none_or(|p| threads.thread(p).is_some()),
-        "Unknown thread"
-    );
-    ensure!(index.sessions.contains_key(&id.0), "Unknown local session");
-    let mut updated = index.clone();
-    updated.bindings.insert(id.0.clone(), thread.map(|p| p.0));
-    updated
-        .sessions
-        .get_mut(&id.0)
-        .expect("known session")
-        .thread = thread.map(|p| p.0);
-    crate::store::write_json(&directory.join("index.json"), &updated)?;
-    *index = updated;
-    shared.publish(index);
-    shared.update(|v| v.saving = false);
-    Ok(())
-}
-
-fn thread_for(cwd: &Path, workspaces: &[(PathBuf, ThreadId)]) -> Option<u64> {
-    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
-    let mut matches = workspaces.iter().filter(|(path, _)| *path == cwd);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first.1.0)
-}
-
-fn sync(
-    directory: &Path,
-    home: &Path,
-    index: &mut Index,
-    threads: &Arc<dyn ThreadService>,
-    agents: &Arc<dyn AgentService>,
-    shared: &Shared,
-) -> Result<()> {
+fn sync(directory: &Path, home: &Path, index: &mut Index, shared: &Shared) -> Result<()> {
     shared.update(|v| {
         v.syncing = true;
         v.error = None;
@@ -426,15 +359,6 @@ fn sync(
         v.updated_sessions = 0;
         v.failed_files = 0;
     });
-    let workspaces: Vec<_> = threads
-        .snapshot()
-        .threads
-        .iter()
-        .map(|p| {
-            let cwd = agents.snapshot(p.id).working_directory;
-            (cwd.canonicalize().unwrap_or(cwd), p.id)
-        })
-        .collect();
     let sources = codex::sources(home, &shared.stopped)?;
     let mut updated = index.clone();
     for session in updated.sessions.values_mut() {
@@ -467,11 +391,6 @@ fn sync(
                 {
                     return Ok(());
                 }
-                cached.thread = updated
-                    .bindings
-                    .get(&cached.id().0)
-                    .copied()
-                    .unwrap_or_else(|| thread_for(&cached.working_directory, &workspaces));
                 updated.sessions.insert(cached.id().0, cached);
                 return Ok(());
             }
@@ -491,13 +410,8 @@ fn sync(
             } else {
                 None
             };
-            let (mut archive, content_changed) =
+            let (archive, content_changed) =
                 codex::read(source, metadata, previous, &shared.stopped)?;
-            archive.session.thread = updated
-                .bindings
-                .get(&id.0)
-                .copied()
-                .unwrap_or_else(|| thread_for(&archive.session.working_directory, &workspaces));
             if content_changed {
                 crate::store::write_json(&path, &archive)?;
                 changed += 1;

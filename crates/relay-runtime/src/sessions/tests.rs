@@ -1,28 +1,5 @@
 use super::*;
-use relay_core::agents::{AgentCommand, AgentSnapshot};
 use std::io::Write;
-
-struct Agents {
-    cwd: PathBuf,
-}
-impl AgentService for Agents {
-    fn revision(&self) -> u64 {
-        0
-    }
-    fn snapshot(&self, thread: ThreadId) -> AgentSnapshot {
-        AgentSnapshot {
-            working_directory: if thread == ThreadId(1) {
-                self.cwd.clone()
-            } else {
-                self.cwd.join(thread.0.to_string())
-            },
-            ..Default::default()
-        }
-    }
-    fn dispatch(&self, _: ThreadId, _: AgentCommand) -> std::result::Result<(), String> {
-        Ok(())
-    }
-}
 
 fn fixture() -> (PathBuf, PathBuf, PathBuf) {
     let root = std::env::temp_dir().join(format!(
@@ -80,47 +57,27 @@ fn wait(
 }
 
 #[test]
-fn append_cursor_survives_restart_and_manual_thread_assignment() {
+fn append_cursor_survives_restart_without_thread_assignment() {
     let (root, home, source) = fixture();
     seed(&source, &root.join("workspace"));
-    let threads: Arc<dyn ThreadService> = Arc::new(crate::ThreadStore::new(root.join("relay")));
-    threads
-        .apply(relay_core::threads::ThreadCommand::Create(
-            relay_core::threads::ThreadDraft {
-                name: "Second thread".into(),
-                ..Default::default()
-            },
-        ))
-        .unwrap();
-    let agents: Arc<dyn AgentService> = Arc::new(Agents {
-        cwd: root.join("workspace"),
-    });
-    let store = ClientSessionStore::with_home(
-        root.join("relay"),
-        home.clone(),
-        threads.clone(),
-        agents.clone(),
-    );
+    let store = ClientSessionStore::with_home(root.join("relay"), home.clone());
     let first = wait(&store, |v| !v.syncing && v.last_sync_unix.is_some());
     assert!(first.error.is_none());
     assert_eq!(first.sessions.len(), 1);
-    assert_eq!(first.sessions[0].thread, Some(ThreadId(1)));
     assert_eq!(first.sessions[0].message_count, 1);
     assert!(
         (CLIENT_SYNC_INTERVAL_SECS..=CLIENT_SYNC_INTERVAL_SECS + 2)
             .contains(&(first.next_sync_unix.unwrap() - first.last_sync_unix.unwrap()))
     );
     let id = first.sessions[0].id.clone();
-    store
-        .dispatch(ClientSessionsCommand::Assign {
-            session: id.clone(),
-            thread: Some(ThreadId(2)),
-        })
-        .unwrap();
-    wait(&store, |v| {
-        !v.saving && v.sessions[0].thread == Some(ThreadId(2))
-    });
     store.shutdown();
+    // Old assignment metadata is ignored while the archive and append cursor survive.
+    let index_path = root.join("relay/client-sessions/index.json");
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    legacy["bindings"] = serde_json::json!({id.0.clone(): 2});
+    legacy["sessions"][&id.0]["thread"] = serde_json::json!(2);
+    fs::write(&index_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let old = fs::read(&source).unwrap();
     let added = record("assistant", "an externally written reply");
     fs::OpenOptions::new()
@@ -129,11 +86,10 @@ fn append_cursor_survives_restart_and_manual_thread_assignment() {
         .unwrap()
         .write_all(added.as_bytes())
         .unwrap();
-    let restarted = ClientSessionStore::with_home(root.join("relay"), home, threads, agents);
-    let next = wait(&restarted, |v| {
+    let restarted = ClientSessionStore::with_home(root.join("relay"), home);
+    wait(&restarted, |v| {
         !v.syncing && v.sessions.first().is_some_and(|s| s.message_count == 2)
     });
-    assert_eq!(next.sessions[0].thread, Some(ThreadId(2)));
     restarted
         .dispatch(ClientSessionsCommand::Open(id.clone()))
         .unwrap();
@@ -152,7 +108,6 @@ fn append_cursor_survives_restart_and_manual_thread_assignment() {
     let rebuilt = wait(&restarted, |v| !v.syncing);
     assert!(rebuilt.error.is_none());
     assert_eq!(rebuilt.updated_sessions, 1);
-    assert_eq!(rebuilt.sessions[0].thread, Some(ThreadId(2)));
     assert_eq!(rebuilt.detail.unwrap().messages.len(), 2);
     assert_eq!(
         fs::read(&source).unwrap(),
@@ -230,16 +185,7 @@ fn partial_lines_rewrites_and_hidden_records_are_handled_without_duplicates() {
 fn corrupt_complete_line_preserves_archive_and_unknown_index_is_not_overwritten() {
     let (root, home, source) = fixture();
     seed(&source, &root.join("workspace"));
-    let threads: Arc<dyn ThreadService> = Arc::new(crate::ThreadStore::new(root.join("relay")));
-    let agents: Arc<dyn AgentService> = Arc::new(Agents {
-        cwd: root.join("workspace"),
-    });
-    let store = ClientSessionStore::with_home(
-        root.join("relay"),
-        home.clone(),
-        threads.clone(),
-        agents.clone(),
-    );
+    let store = ClientSessionStore::with_home(root.join("relay"), home.clone());
     let first = wait(&store, |v| !v.syncing && !v.sessions.is_empty());
     let path = archive_path(&root.join("relay/client-sessions"), &first.sessions[0].id);
     let previous = fs::read(&path).unwrap();
@@ -258,7 +204,7 @@ fn corrupt_complete_line_preserves_archive_and_unknown_index_is_not_overwritten(
     let index = root.join("relay/client-sessions/index.json");
     let unknown = r#"{"version":99,"sessions":{},"last_sync_unix":null}"#;
     fs::write(&index, unknown).unwrap();
-    let blocked = ClientSessionStore::with_home(root.join("relay"), home, threads, agents);
+    let blocked = ClientSessionStore::with_home(root.join("relay"), home);
     blocked.dispatch(ClientSessionsCommand::Sync).unwrap();
     wait(&blocked, |v| !v.syncing && v.error.is_some());
     blocked.shutdown();

@@ -1,9 +1,8 @@
 //! Opt-in local import check. Reads native sessions without connecting or prompting any agent.
 use relay_core::sessions::{ClientSessionsCommand, ClientSessionsService};
-use relay_runtime::{AgentRuntime, ClientSessionStore, ThreadStore};
+use relay_runtime::{AgentRuntime, ClientSessionStore};
 use std::{
     path::PathBuf,
-    sync::Arc,
     thread,
     time::{Duration, Instant},
 };
@@ -43,13 +42,10 @@ fn main() -> Result<(), String> {
         .and_then(|i| args.get(i + 1))
         .map(PathBuf::from)
         .unwrap_or_else(|| AgentRuntime::default_directory().join("probes/client-sessions"));
-    let threads = Arc::new(ThreadStore::new(root.clone()));
-    let agents = Arc::new(AgentRuntime::new(root.clone(), threads.clone()));
-    let store = ClientSessionStore::new(root, threads, agents.clone());
+    let store = ClientSessionStore::new(root);
     wait(&store)?;
     store.dispatch(ClientSessionsCommand::Sync)?;
     wait(&store)?;
     store.shutdown();
-    agents.shutdown();
     Ok(())
 }

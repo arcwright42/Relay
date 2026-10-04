@@ -3,7 +3,7 @@
 pub enum Page {
     Home,
     Inbox,
-    Sessions,
+    Memory,
     Files,
     Thread(usize),
     Agents,

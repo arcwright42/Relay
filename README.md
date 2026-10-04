@@ -11,7 +11,8 @@ Relay 是 Rust / GPUI Kit 原生桌面应用，通过 ACP 连接本地 Codex。�
 - 首页、全局快捷入口、语音默认进入同一主对话；打开任务或显式选择任务后，输入进入该任务。话题变化不自动切换 thread。
 - 主 Agent 使用 `create_task` / `continue_task` / `inspect_task` 调度；后台持久队列派发，结果回到主对话，活动页展示等待、进度、待检查和失败状态。
 - 原生记忆参考 claude-mem 的事件采集、后台 observation、来源版本和渐进检索，采用 Rust + SQLite/FTS5 + 本地 stdio MCP。
-- 历史 Codex session 只读归档；后台按片段提炼，形成跨 session 的主题集合。主题归类不改变会话身份或消息目标。
+- 记忆页面展示导入与提炼状态、候选和已确认记录、主题标签及来源；支持确认、修订、遗忘和失败重试。
+- 历史 Codex session 在后台只读归档，从来源查看原始会话；旧“本地会话”Tab 和手动归属已移除。主题标签不改变会话身份或消息目标。
 - 本地 Codex 发现、认证、真实流式对话、工具权限、模型配置、取消和原生 session 恢复。更多 Harness 待接入。
 - thread 文字资料按需选用；个人 Files 空间支持导入、新建、文本/Markdown 编辑、图片及 PDF/Office 首页预览、冲突检测和本地文件跳转。
 - `⌃⌥Space` 取得选区和 URL，Moli 后台补充网页上下文；小窗回复可展开到同一 thread。
@@ -56,11 +57,11 @@ cargo xtask start
 | [技术架构](docs/ARCHITECTURE.md) | Rust 包边界、ACP、调度、恢复与上下文 |
 | [常驻 Agent 与原生记忆](docs/NATIVE-MEMORY.md) | claude-mem 参考、SQLite、提炼队列、检索、主题和迁移 |
 | [上下文与缓存](docs/CONTEXT-CACHING.md) | 资料快照、增量、异常恢复和用量口径 |
-| [本地会话中心](docs/CLIENT-SESSIONS.md) | Codex 归档、增量同步与原生记忆导入 |
+| [会话归档与记忆入口](docs/CLIENT-SESSIONS.md) | 后台归档、提炼状态、记忆审核与来源查看 |
 | [快捷入口](docs/QUICK-ENTRY.md) | 选区、小窗、网页上下文与语音 |
 | [个人文件](docs/PERSONAL-FILES.md) | 独立文件空间、编辑、预览和冲突检测 |
 | [Codex 接入](docs/CODEX.md) | 本地安装、适配器、登录和模型 |
 | [包治理](docs/PACKAGES.md) | 固定依赖、检查、资源和本地打包 |
 | [UI 框架选型](docs/UI-FRAMEWORK.md) | GPUI + GPUI Kit |
 
-需求更新：2026-10-04。Rust 1.97.1，GPUI Kit 0.6.6，底层 GPUI 由 Kit 配套管理。
+需求更新：2026-10-05。Rust 1.97.1，GPUI Kit 0.6.6，底层 GPUI 由 Kit 配套管理。

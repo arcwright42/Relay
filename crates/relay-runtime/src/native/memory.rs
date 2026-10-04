@@ -340,7 +340,7 @@ impl NativeStore {
     }
 }
 
-fn insert_note(
+pub(super) fn insert_note(
     db: &Connection,
     caller: ThreadId,
     n: &Value,

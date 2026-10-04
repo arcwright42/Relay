@@ -8,7 +8,7 @@ mod pages;
 mod quick;
 mod threads;
 pub use quick::{OpenAgentSettings, OpenThread, RequestAccessibility, ResizeQuick};
-mod sessions;
+mod memory;
 mod submission;
 mod voice;
 pub use voice::OpenMicrophoneSettings;
@@ -30,7 +30,6 @@ use crate::{
 use relay_core::{
     Thread,
     agents::*,
-    sessions::{ClientSessionsService, ClientSessionsSnapshot, EmptyClientSessions},
     settings::{Language, SettingsService, SettingsSnapshot},
     threads::{ThreadCommand, ThreadService},
     voice::{EmptyVoiceService, VoiceService, VoiceSnapshot},
@@ -133,14 +132,7 @@ pub struct Workbench {
     agent_states: Vec<AgentSnapshot>,
     agent_errors: Vec<Option<String>>,
     agent_revision: u64,
-    client_session_service: Arc<dyn ClientSessionsService>,
-    client_session_snapshot: ClientSessionsSnapshot,
-    client_session_revision: u64,
-    client_session_filter: Option<relay_core::ThreadId>,
-    client_session_filter_open: bool,
-    client_session_binding_open: bool,
-    client_session_error: Option<String>,
-    client_session_search: Entity<InputState>,
+    memory: Entity<memory::MemoryView>,
     picker_open: bool,
     conversation_scroll: ScrollHandle,
     _agent_updates: Task<()>,
@@ -173,21 +165,30 @@ impl Workbench {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(language.text(Text::SearchPlaceholder))
         });
-        let client_session_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(language.text(Text::ClientSessionsSearch))
-        });
+        let memory = cx.new(|cx| memory::MemoryView::new(language, window, cx));
         let mut subscriptions = vec![cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         })];
         subscriptions.push(cx.subscribe_in(
-            &client_session_search,
+            &memory,
             window,
-            |_, _, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+            |this, _, _: &memory::ConnectCoordinator, window, cx| {
+                this.navigate(Page::Home, window, cx);
+                if let Some(index) = this.threads.iter().position(|t| t.id.0 == 0) {
+                    let state = &this.agent_states[index];
+                    if matches!(
+                        state.status,
+                        ConnectionStatus::Disconnected | ConnectionStatus::Failed
+                    ) && let Err(error) = this.agent_service.dispatch(
+                        this.threads[index].id,
+                        AgentCommand::Connect(state.source.clone()),
+                    ) {
+                        this.agent_errors[index] = Some(error);
+                    }
                 }
+                cx.notify();
             },
         ));
         for draft in &drafts {
@@ -217,7 +218,7 @@ impl Workbench {
                     .update_in(cx, |this, window, cx| {
                         this.refresh_threads(window, cx);
                         this.refresh_agents(cx);
-                        this.refresh_client_sessions(cx);
+                        this.refresh_memory_agent(cx);
                         this.advance_pending_send(window, cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
@@ -258,14 +259,7 @@ impl Workbench {
             agent_service,
             agent_states,
             agent_revision,
-            client_session_service: Arc::new(EmptyClientSessions),
-            client_session_snapshot: ClientSessionsSnapshot::default(),
-            client_session_revision: 0,
-            client_session_filter: None,
-            client_session_filter_open: false,
-            client_session_binding_open: false,
-            client_session_error: None,
-            client_session_search,
+            memory,
             picker_open: false,
             conversation_scroll: ScrollHandle::new(),
             _agent_updates: updates,
@@ -287,9 +281,8 @@ impl Workbench {
         self.search.update(cx, |search, cx| {
             search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
         });
-        self.client_session_search.update(cx, |search, cx| {
-            search.set_placeholder(language.text(Text::ClientSessionsSearch), window, cx)
-        });
+        self.memory
+            .update(cx, |memory, cx| memory.set_language(language, window, cx));
         for draft in &self.drafts {
             draft.update(cx, |draft, cx| {
                 draft.set_placeholder(language.text(Text::AskRelay), window, cx)
@@ -308,6 +301,12 @@ impl Workbench {
             self.selected_thread = self.threads.iter().position(|t| t.id.0 == 0).unwrap_or(0);
         }
         self.page = page;
+        if page == Page::Memory {
+            self.refresh_memory_agent(cx);
+        }
+        self.memory.update(cx, |memory, cx| {
+            memory.set_visible(page == Page::Memory, window, cx)
+        });
         self.files.update(cx, |files, cx| {
             files.set_visible(page == Page::Files, window, cx)
         });
@@ -406,7 +405,7 @@ impl Render for Workbench {
                 Page::Agents if !self.threads.is_empty() => self.agents(cx),
                 Page::Agents => self.home(cx),
                 Page::Settings => self.settings(cx),
-                Page::Sessions => self.client_sessions(cx),
+                Page::Memory => column().flex_1().min_h_0().child(self.memory.clone()),
                 Page::Files => column().flex_1().min_h_0().child(self.files.clone()),
                 Page::Inbox => self.activity(cx),
             }
