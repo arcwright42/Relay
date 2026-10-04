@@ -1,4 +1,4 @@
-//! Voice credentials are independent of Jev, and never enter domain snapshots.
+//! Voice credentials are independent of the agent harness, and never enter domain snapshots.
 use std::{collections::BTreeMap, path::Path};
 
 pub(super) struct Config {

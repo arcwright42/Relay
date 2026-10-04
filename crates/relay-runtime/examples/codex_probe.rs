@@ -2,9 +2,9 @@
 //! No inference request is sent unless --prompt is supplied.
 use relay_core::{
     agents::{AgentCommand, AgentService, AgentSource, ConnectionStatus, MessageRole},
-    projects::ProjectService,
+    threads::ThreadService,
 };
-use relay_runtime::{AgentRuntime, ProjectStore};
+use relay_runtime::{AgentRuntime, ThreadStore};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,17 +28,17 @@ fn main() -> Result<(), String> {
         .position(|a| a == "--local")
         .and_then(|i| args.get(i + 1))
         .map_or(AgentSource::Auto, |path| AgentSource::Local(path.into()));
-    let projects = Arc::new(ProjectStore::new(root.clone()));
-    let id = projects
+    let threads = Arc::new(ThreadStore::new(root.clone()));
+    let id = threads
         .snapshot()
-        .projects
+        .threads
         .first()
-        .ok_or("Probe project unavailable")?
+        .ok_or("Probe thread unavailable")?
         .id;
-    let runtime = AgentRuntime::new(root, projects);
+    let runtime = AgentRuntime::new(root, threads);
     let before = runtime.snapshot(id);
     println!(
-        "Loaded project {}; {} saved messages",
+        "Loaded thread {}; {} saved messages",
         id.0,
         before.messages.len()
     );

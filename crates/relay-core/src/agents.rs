@@ -1,5 +1,5 @@
 //! Framework-free contracts between the desktop and the agent runtime.
-use crate::ProjectId;
+use crate::ThreadId;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -101,6 +101,9 @@ pub struct ToolActivity {
     pub id: String,
     pub title: String,
     pub status: String,
+    /// Bounded protocol evidence. Empty updates leave previously received content intact.
+    pub input: String,
+    pub output: String,
 }
 
 #[derive(Clone, Debug)]
@@ -215,7 +218,7 @@ pub enum AgentCommand {
     },
     Send(String),
     Cancel,
-    /// Cancel only this response; never interrupt a later turn in the same project.
+    /// Cancel only this response; never interrupt a later turn in the same thread.
     CancelTurn {
         response_id: u64,
     },
@@ -230,10 +233,10 @@ pub enum AgentCommand {
 /// Implementations perform I/O in background workers. These methods must not block UI rendering.
 pub trait AgentService: Send + Sync {
     fn revision(&self) -> u64;
-    fn snapshot(&self, project: ProjectId) -> AgentSnapshot;
-    fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String>;
+    fn snapshot(&self, thread: ThreadId) -> AgentSnapshot;
+    fn dispatch(&self, thread: ThreadId, command: AgentCommand) -> Result<(), String>;
     /// Atomically submits a prompt and returns its stable assistant message ID.
-    fn send_turn(&self, _: ProjectId, _: String) -> Result<u64, String> {
+    fn send_turn(&self, _: ThreadId, _: String) -> Result<u64, String> {
         Err("This agent service does not support tracked turns.".into())
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
 use gpui_kit::component::popover::Popover;
-use relay_core::{ProjectId, sessions::*};
+use relay_core::{ThreadId, sessions::*};
 
 impl Workbench {
     pub fn set_client_session_service(
@@ -29,19 +29,19 @@ impl Workbench {
         cx.notify();
     }
 
-    fn client_project_picker(&self, assigning: bool, cx: &mut Context<Self>) -> Popover {
+    fn client_thread_picker(&self, assigning: bool, cx: &mut Context<Self>) -> Popover {
         let selected = self
             .client_session_snapshot
             .detail
             .as_ref()
             .map(|d| d.session.clone());
         let current = if assigning {
-            selected.as_ref().and_then(|s| s.project)
+            selected.as_ref().and_then(|s| s.thread)
         } else {
             self.client_session_filter
         };
         let label = current
-            .and_then(|id| self.projects.iter().find(|p| p.id == id))
+            .and_then(|id| self.threads.iter().find(|p| p.id == id))
             .map(|p| p.name.as_str())
             .unwrap_or_else(|| {
                 self.text(if assigning {
@@ -81,20 +81,20 @@ impl Workbench {
             .disabled(assigning && (selected.is_none() || self.client_session_snapshot.saving)),
         )
         .content(move |_, _, cx| {
-            weak.update(cx, |this, cx| this.client_project_menu(assigning, cx))
+            weak.update(cx, |this, cx| this.client_thread_menu(assigning, cx))
                 .unwrap_or_else(|_| column())
         })
     }
 
-    fn client_project_menu(&self, assigning: bool, cx: &mut Context<Self>) -> Div {
+    fn client_thread_menu(&self, assigning: bool, cx: &mut Context<Self>) -> Div {
         column().child(
             column()
-                .id("client-project-picker-list")
+                .id("client-thread-picker-list")
                 .w(px(250.))
                 .max_h(px(320.))
                 .overflow_y_scroll()
                 .child(
-                    Button::new("client-session-project-none")
+                    Button::new("client-session-thread-none")
                         .ghost()
                         .w_full()
                         .justify_start()
@@ -104,27 +104,27 @@ impl Workbench {
                             Text::ClientSessionsAll
                         }))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_client_project(assigning, None, cx)
+                            this.choose_client_thread(assigning, None, cx)
                         })),
                 )
-                .children(self.projects.iter().map(|project| {
-                    let id = project.id;
-                    Button::new(("client-session-project", id.0))
+                .children(self.threads.iter().map(|thread| {
+                    let id = thread.id;
+                    Button::new(("client-session-thread", id.0))
                         .ghost()
                         .w_full()
                         .justify_start()
-                        .label(project.name.clone())
+                        .label(thread.name.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.choose_client_project(assigning, Some(id), cx)
+                            this.choose_client_thread(assigning, Some(id), cx)
                         }))
                 })),
         )
     }
 
-    fn choose_client_project(
+    fn choose_client_thread(
         &mut self,
         assigning: bool,
-        project: Option<ProjectId>,
+        thread: Option<ThreadId>,
         cx: &mut Context<Self>,
     ) {
         if assigning {
@@ -138,13 +138,13 @@ impl Workbench {
                 self.client_session_action(
                     ClientSessionsCommand::Assign {
                         session: id,
-                        project,
+                        thread,
                     },
                     cx,
                 );
             }
         } else {
-            self.client_session_filter = project;
+            self.client_session_filter = thread;
             self.client_session_filter_open = false;
             cx.notify();
         }
@@ -163,7 +163,7 @@ impl Workbench {
             .iter()
             .filter(|s| {
                 self.client_session_filter
-                    .is_none_or(|p| s.project == Some(p))
+                    .is_none_or(|p| s.thread == Some(p))
             })
             .filter(|s| {
                 query.is_empty()
@@ -215,7 +215,7 @@ impl Workbench {
                             .child(muted(self.text(Text::ClientSessionsHint)).text_size(px(13.)))
                             .child(muted(stats).text_size(px(13.))),
                     )
-                    .child(self.client_project_picker(false, cx))
+                    .child(self.client_thread_picker(false, cx))
                     .child(
                         Button::new("sync-client-sessions")
                             .outline()
@@ -272,9 +272,9 @@ impl Workbench {
                             })
                             .children(sessions.iter().take(200).map(|session| {
                                 let id = session.id.clone();
-                                let project = session
-                                    .project
-                                    .and_then(|id| self.projects.iter().find(|p| p.id == id))
+                                let thread = session
+                                    .thread
+                                    .and_then(|id| self.threads.iter().find(|p| p.id == id))
                                     .map(|p| p.name.as_str())
                                     .unwrap_or(self.text(Text::ClientSessionsUnassigned));
                                 Button::new(ElementId::Name(
@@ -302,7 +302,7 @@ impl Workbench {
                                         )
                                         .child(
                                             muted(format!(
-                                                "{} · {project} · {}",
+                                                "{} · {thread} · {}",
                                                 session.client, session.message_count
                                             ))
                                             .text_size(px(13.)),
@@ -362,7 +362,7 @@ impl Workbench {
                             .font_weight(FontWeight::MEDIUM)
                             .child(session.title.clone()),
                     )
-                    .child(self.client_project_picker(true, cx)),
+                    .child(self.client_thread_picker(true, cx)),
             )
             .child(muted(session.source.display().to_string()).text_size(px(13.)))
             .when(!session.available, |v| {

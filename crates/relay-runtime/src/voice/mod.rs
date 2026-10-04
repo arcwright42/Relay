@@ -4,7 +4,7 @@ mod dialogue;
 mod resources;
 mod turns;
 pub use cloud::{QwenSpeech, save_voice_key};
-pub use dialogue::ProjectVoiceDialogue;
+pub use dialogue::ThreadVoiceDialogue;
 pub use resources::BundledWakeResources;
 #[cfg(test)]
 mod dialogue_tests;
@@ -279,14 +279,6 @@ impl VoiceService for VoiceRuntime {
         {
             state.resume(self.shared.transcriber.available());
         }
-    }
-    fn choose_project(
-        &self,
-        session_id: u64,
-        turn_id: u64,
-        target: relay_core::routing::RouteTarget,
-    ) {
-        self.shared.choose_project(session_id, turn_id, target);
     }
 }
 impl Drop for VoiceRuntime {

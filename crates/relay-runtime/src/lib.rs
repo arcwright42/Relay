@@ -7,27 +7,26 @@ mod files;
 mod installer;
 mod metrics;
 mod moli_installer;
-mod projects;
-mod routing;
+pub mod native;
 mod sessions;
 mod settings;
 mod store;
+mod threads;
 mod voice;
 mod webfetch;
 pub use voice::{
-    BundledWakeResources, ProjectVoiceDialogue, QwenSpeech, VoiceRuntime, save_voice_key,
+    BundledWakeResources, QwenSpeech, ThreadVoiceDialogue, VoiceRuntime, save_voice_key,
 };
 pub use webfetch::MoliFetcher;
 
 pub use files::FileStore;
-pub use projects::ProjectStore;
-pub use routing::{JevRouter, save_routing_key};
 pub use sessions::ClientSessionStore;
 pub use settings::SettingsStore;
+pub use threads::ThreadStore;
 
 use installer::{Installer, RELEASE};
 use relay_acp::{Command as AcpCommand, ConnectionHandle, Event};
-use relay_core::{ProjectId, agents::*, projects::ProjectService};
+use relay_core::{ThreadId, agents::*, threads::ThreadService};
 use std::{
     collections::BTreeMap,
     path::PathBuf,
@@ -38,7 +37,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct ProjectState {
+struct ThreadState {
     view: AgentSnapshot,
     storage_version: u32,
     stored_identity: store::SavedIdentity,
@@ -59,9 +58,9 @@ struct PendingTurn {
     context_sent: bool,
 }
 
-impl ProjectState {
-    fn saved(&self) -> store::SavedProject {
-        store::SavedProject {
+impl ThreadState {
+    fn saved(&self) -> store::SavedThread {
+        store::SavedThread {
             version: self.storage_version.max(2),
             identity: self.stored_identity.clone(),
             local_codex: match &self.view.source {
@@ -107,37 +106,33 @@ impl ProjectState {
 }
 
 struct Shared {
-    projects: Mutex<BTreeMap<ProjectId, ProjectState>>,
+    threads: Mutex<BTreeMap<ThreadId, ThreadState>>,
     root: PathBuf,
     revision: AtomicU64,
     shutdown: AtomicBool,
     // Serializes file replacement without holding a UI snapshot lock during disk I/O.
     persistence: Mutex<()>,
+    native: Option<Arc<native::NativeStore>>,
 }
 
 impl Shared {
-    fn valid(&self, project: ProjectId, generation: u64) -> bool {
+    fn valid(&self, thread: ThreadId, generation: u64) -> bool {
         !self.shutdown.load(Ordering::Acquire)
             && self
-                .projects
+                .threads
                 .lock()
-                .expect("project lock")
-                .get(&project)
+                .expect("thread lock")
+                .get(&thread)
                 .is_some_and(|p| p.generation == generation)
     }
 
-    fn update(
-        &self,
-        project: ProjectId,
-        generation: u64,
-        f: impl FnOnce(&mut ProjectState),
-    ) -> bool {
-        let mut projects = self.projects.lock().expect("project lock");
+    fn update(&self, thread: ThreadId, generation: u64, f: impl FnOnce(&mut ThreadState)) -> bool {
+        let mut threads = self.threads.lock().expect("thread lock");
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
-        let Some(state) = projects
-            .get_mut(&project)
+        let Some(state) = threads
+            .get_mut(&thread)
             .filter(|p| p.generation == generation)
         else {
             return false;
@@ -147,11 +142,11 @@ impl Shared {
         true
     }
 
-    fn persist(&self, project: ProjectId) -> bool {
+    fn persist(&self, thread: ThreadId) -> bool {
         let _write = self.persistence.lock().expect("persistence lock");
         let saved = {
-            let projects = self.projects.lock().expect("project lock");
-            let Some(state) = projects.get(&project) else {
+            let threads = self.threads.lock().expect("thread lock");
+            let Some(state) = threads.get(&thread) else {
                 return false;
             };
             if state.storage_error {
@@ -159,19 +154,14 @@ impl Shared {
             } // Never overwrite a file we could not read.
             state.saved()
         };
-        if let Err(error) = store::save(&self.root, project, &saved) {
+        if let Err(error) = store::save(&self.root, thread, &saved) {
             diagnostics::error(
                 &self.root,
-                project,
+                thread,
                 "conversation.save",
                 &format!("{error:#}"),
             );
-            if let Some(state) = self
-                .projects
-                .lock()
-                .expect("project lock")
-                .get_mut(&project)
-            {
+            if let Some(state) = self.threads.lock().expect("thread lock").get_mut(&thread) {
                 state.view.error = Some(format!("Could not save this conversation: {error}"));
             }
             self.revision.fetch_add(1, Ordering::Release);
@@ -180,14 +170,19 @@ impl Shared {
         true
     }
 
-    fn event(&self, project: ProjectId, generation: u64, event: Event) {
+    fn event(&self, thread: ThreadId, generation: u64, event: Event) {
+        let ready_event = matches!(&event, Event::Ready { .. });
+        let ended = matches!(
+            &event,
+            Event::TurnEnded { .. } | Event::Error { fatal: true, .. }
+        );
         if let Event::Error { message, .. } = &event
-            && self.valid(project, generation)
+            && self.valid(thread, generation)
         {
-            diagnostics::error(&self.root, project, "agent.event", message);
+            diagnostics::error(&self.root, thread, "agent.event", message);
         }
         let mut persist = false;
-        if !self.update(project, generation, |state| match event {
+        if !self.update(thread, generation, |state| match event {
             Event::AuthenticationRequired(methods) => {
                 state.view.status = ConnectionStatus::NeedsAuthentication;
                 state.view.auth_methods = methods;
@@ -245,6 +240,12 @@ impl Shared {
                         if !tool.status.is_empty() {
                             existing.status = tool.status;
                         }
+                        if !tool.input.is_empty() {
+                            existing.input = tool.input;
+                        }
+                        if !tool.output.is_empty() {
+                            existing.output = tool.output;
+                        }
                     } else {
                         message.tools.push(tool);
                     }
@@ -277,7 +278,44 @@ impl Shared {
             return;
         }
         if persist {
-            self.persist(project);
+            self.persist(thread);
+        }
+        if (ended || ready_event)
+            && let Some(native) = &self.native
+        {
+            let state = self
+                .threads
+                .lock()
+                .expect("thread lock")
+                .get(&thread)
+                .map(|s| (s.session_id.clone(), s.view.messages.clone()));
+            if let Some((session, messages)) = state {
+                if let Some(session) = session {
+                    let result = (|| -> anyhow::Result<()> {
+                        let mut db = native.db.lock().expect("native store");
+                        let tx = db.transaction()?;
+                        tx.execute("INSERT INTO runtime_sessions(thread_id,session_id,generation) VALUES(?,?,?) ON CONFLICT(thread_id) DO UPDATE SET session_id=excluded.session_id,generation=excluded.generation",rusqlite::params![thread.0,session,generation])?;
+                        tx.execute("INSERT OR IGNORE INTO owned_sessions(session_id,thread_id) VALUES(?,?)",rusqlite::params![session,thread.0])?;
+                        tx.commit()?;
+                        Ok(())
+                    })();
+                    if let Err(e) = result {
+                        diagnostics::error(&self.root, thread, "native.session", &e.to_string());
+                    }
+                }
+                if ended && thread != native::OBSERVER && !messages.is_empty() {
+                    let events: Vec<_> = messages
+                        .iter()
+                        .rev()
+                        .take(2)
+                        .rev()
+                        .map(store::SavedMessage::from_message)
+                        .collect();
+                    if let Err(e) = native.capture_turn(thread, &events) {
+                        diagnostics::error(&self.root, thread, "native.capture", &e.to_string());
+                    }
+                }
+            }
         }
     }
 }
@@ -286,7 +324,7 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
-fn finish_turn(state: &mut ProjectState, outcome: TurnOutcome, usage: Option<TokenUsage>) {
+fn finish_turn(state: &mut ThreadState, outcome: TurnOutcome, usage: Option<TokenUsage>) {
     if let Some(turn) = state.turn.take() {
         if let Some(message) = streaming_message(state) {
             if let Some(metrics) = message.metrics.as_mut() {
@@ -309,7 +347,7 @@ fn finish_turn(state: &mut ProjectState, outcome: TurnOutcome, usage: Option<Tok
     }
 }
 
-fn streaming_message(state: &mut ProjectState) -> Option<&mut ChatMessage> {
+fn streaming_message(state: &mut ThreadState) -> Option<&mut ChatMessage> {
     state
         .view
         .messages
@@ -317,10 +355,10 @@ fn streaming_message(state: &mut ProjectState) -> Option<&mut ChatMessage> {
         .filter(|m| m.role == MessageRole::Assistant && m.status == MessageStatus::Streaming)
 }
 
-type Connections = Arc<Mutex<BTreeMap<ProjectId, ConnectionHandle>>>;
+type Connections = Arc<Mutex<BTreeMap<ThreadId, ConnectionHandle>>>;
 
 pub struct AgentRuntime {
-    project_service: Arc<dyn ProjectService>,
+    thread_service: Arc<dyn ThreadService>,
     shared: Arc<Shared>,
     connections: Connections,
     installer: Arc<Installer>,
@@ -328,6 +366,30 @@ pub struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    pub fn with_native(root: PathBuf, native: Arc<native::NativeStore>) -> Self {
+        let mut runtime = Self::new(root, native.clone());
+        Arc::get_mut(&mut runtime.shared)
+            .expect("new runtime")
+            .native = Some(native);
+        runtime
+    }
+
+    pub(crate) fn reset_observer(&self) {
+        let _ = self.dispatch(native::OBSERVER, AgentCommand::Disconnect);
+        if let Some(s) = self
+            .shared
+            .threads
+            .lock()
+            .expect("thread lock")
+            .get_mut(&native::OBSERVER)
+        {
+            s.session_id = None;
+            s.session_key = None;
+            s.needs_history = false;
+            s.view.messages.clear();
+            s.context_checkpoint = Default::default();
+        }
+    }
     pub fn default_directory() -> PathBuf {
         if let Some(directory) = std::env::var_os("RELAY_DATA_DIR") {
             return PathBuf::from(directory);
@@ -336,14 +398,14 @@ impl AgentRuntime {
             .join("Library/Application Support/Relay")
     }
 
-    pub fn new(root: PathBuf, project_service: Arc<dyn ProjectService>) -> Self {
+    pub fn new(root: PathBuf, thread_service: Arc<dyn ThreadService>) -> Self {
         let installer = Arc::new(Installer::new(root.clone()));
         let local_installations = installer::discover_local();
-        let mut projects = BTreeMap::new();
-        for id in project_service.snapshot().projects.iter().map(|p| p.id) {
+        let mut threads = BTreeMap::new();
+        for id in thread_service.snapshot().threads.iter().map(|p| p.id) {
             let loaded = store::load(&root, id);
             let error = loaded.as_ref().err().map(|e| {
-                let message = format!("Could not read this project's saved conversation: {e:#}. The existing file has been preserved.");
+                let message = format!("Could not read this thread's saved conversation: {e:#}. The existing file has been preserved.");
                 diagnostics::error(&root, id, "conversation.load", &message);
                 message
             });
@@ -366,8 +428,10 @@ impl AgentRuntime {
                 working_directory: saved
                     .cwd
                     .filter(|cwd| {
-                        let legacy = root.join(format!("projects/{}/workspace", id.0));
-                        *cwd != legacy && legacy.canonicalize().ok().as_ref() != Some(cwd)
+                        ["projects", "threads"].iter().all(|prefix| {
+                            let legacy = root.join(format!("{prefix}/{}/workspace", id.0));
+                            *cwd != legacy && legacy.canonicalize().ok().as_ref() != Some(cwd)
+                        })
                     })
                     .unwrap_or_else(|| files::workspace_directory(&root)),
                 messages: saved
@@ -379,9 +443,9 @@ impl AgentRuntime {
                 runtime_version: None,
                 ..Default::default()
             };
-            projects.insert(
+            threads.insert(
                 id,
-                ProjectState {
+                ThreadState {
                     view,
                     storage_version: saved.version,
                     stored_identity: saved.identity,
@@ -398,13 +462,14 @@ impl AgentRuntime {
             );
         }
         Self {
-            project_service,
+            thread_service,
             shared: Arc::new(Shared {
                 root,
-                projects: Mutex::new(projects),
+                threads: Mutex::new(threads),
                 revision: AtomicU64::new(1),
                 shutdown: AtomicBool::new(false),
                 persistence: Mutex::new(()),
+                native: None,
             }),
             connections: Arc::default(),
             installer,
@@ -412,32 +477,43 @@ impl AgentRuntime {
         }
     }
 
-    fn ensure_project(&self, id: ProjectId) -> Result<(), String> {
+    fn ensure_thread(&self, id: ThreadId) -> Result<(), String> {
         if self
             .shared
-            .projects
+            .threads
             .lock()
-            .expect("project lock")
+            .expect("thread lock")
             .contains_key(&id)
         {
             return Ok(());
         }
-        if self.project_service.project(id).is_none() {
-            return Err("Unknown project".into());
+        if self.thread_service.thread(id).is_none() {
+            return Err("Unknown thread".into());
         }
-        let mut projects = self.shared.projects.lock().expect("project lock");
-        if let std::collections::btree_map::Entry::Vacant(entry) = projects.entry(id) {
-            entry.insert(ProjectState {
+        let mut threads = self.shared.threads.lock().expect("thread lock");
+        let mut preferences = threads
+            .get(&native::MAIN)
+            .map(|s| s.preferences.clone())
+            .unwrap_or_default();
+        if id == native::OBSERVER {
+            preferences.insert("mode".into(), "read-only".into());
+        }
+        if let std::collections::btree_map::Entry::Vacant(entry) = threads.entry(id) {
+            entry.insert(ThreadState {
                 storage_version: 2,
                 stored_identity: store::SavedIdentity::default(),
                 view: AgentSnapshot {
-                    working_directory: files::workspace_directory(&self.shared.root),
+                    working_directory: if id == native::OBSERVER {
+                        self.shared.root.join("memory-observer/workspace")
+                    } else {
+                        files::workspace_directory(&self.shared.root)
+                    },
                     ..Default::default()
                 },
                 generation: 0,
                 session_id: None,
                 session_key: None,
-                preferences: BTreeMap::new(),
+                preferences,
                 needs_history: false,
                 context_checkpoint: context::Checkpoint::default(),
                 turn: None,
@@ -449,13 +525,13 @@ impl AgentRuntime {
         Ok(())
     }
 
-    fn connect(&self, project: ProjectId, source: AgentSource) -> Result<(), String> {
+    fn connect(&self, thread: ThreadId, source: AgentSource) -> Result<(), String> {
         let (generation, cwd, preferences) = {
-            let mut projects = self.shared.projects.lock().expect("project lock");
-            let state = projects.get_mut(&project).ok_or("Unknown project")?;
+            let mut threads = self.shared.threads.lock().expect("thread lock");
+            let state = threads.get_mut(&thread).ok_or("Unknown thread")?;
             if state.storage_error {
                 let error = state.view.error.clone().unwrap_or_else(|| "The saved conversation could not be read. Resolve the storage error before connecting.".into());
-                diagnostics::error(&self.shared.root, project, "agent.connect", &error);
+                diagnostics::error(&self.shared.root, thread, "agent.connect", &error);
                 return Err(error);
             }
             if state.view.status.is_busy() {
@@ -479,7 +555,7 @@ impl AgentRuntime {
         self.connections
             .lock()
             .expect("connection lock")
-            .remove(&project);
+            .remove(&thread);
         let shared = self.shared.clone();
         let installer = self.installer.clone();
         let connections = self.connections.clone();
@@ -491,16 +567,16 @@ impl AgentRuntime {
                     let prepared = installer.prepare(
                         &source,
                         |step| {
-                            shared.update(project, generation, |s| {
+                            shared.update(thread, generation, |s| {
                                 s.view.status = ConnectionStatus::Preparing(step.into())
                             });
                         },
-                        || !shared.valid(project, generation),
+                        || !shared.valid(thread, generation),
                     )?;
-                    if !shared.valid(project, generation) {
+                    if !shared.valid(thread, generation) {
                         return Ok(());
                     }
-                    shared.update(project, generation, |s| {
+                    shared.update(thread, generation, |s| {
                         s.view.source = AgentSource::Local(prepared.executable.clone());
                         s.use_codex(&AgentSource::Local(prepared.executable));
                         s.view.status = ConnectionStatus::Connecting;
@@ -508,10 +584,10 @@ impl AgentRuntime {
                         s.view.runtime_version = Some(prepared.version);
                     });
                     let saved = shared
-                        .projects
+                        .threads
                         .lock()
-                        .expect("project lock")
-                        .get(&project)
+                        .expect("thread lock")
+                        .get(&thread)
                         .filter(|s| s.session_key.as_ref() == Some(&session_key(&s.view)))
                         .and_then(|s| s.session_id.clone());
                     let callback_shared = shared.clone();
@@ -521,36 +597,49 @@ impl AgentRuntime {
                         relay_acp::SessionOptions {
                             saved_session: saved,
                             preferences,
+                            mcp_servers: if shared.native.is_some() {
+                                vec![relay_acp::StdioMcpServer {
+                                    name: "relay".into(),
+                                    command: std::env::current_exe()?,
+                                    args: vec![
+                                        "--relay-mcp".into(),
+                                        shared.root.to_string_lossy().into_owned(),
+                                        thread.0.to_string(),
+                                    ],
+                                }]
+                            } else {
+                                vec![]
+                            },
                         },
-                        Arc::new(move |event| callback_shared.event(project, generation, event)),
+                        Arc::new(move |event| callback_shared.event(thread, generation, event)),
                     )
                     .map_err(anyhow::Error::msg)?;
                     let mut handle = Some(handle);
                     {
-                        // Lock order is always project state, then connection handles.
-                        let projects = shared.projects.lock().expect("project lock");
+                        // Lock order is always thread state, then connection handles.
+                        let threads = shared.threads.lock().expect("thread lock");
                         if !shared.shutdown.load(Ordering::Acquire)
-                            && projects
-                                .get(&project)
+                            && threads
+                                .get(&thread)
                                 .is_some_and(|p| p.generation == generation)
                         {
                             connections
                                 .lock()
                                 .expect("connection lock")
-                                .insert(project, handle.take().expect("new connection"));
+                                .insert(thread, handle.take().expect("new connection"));
                         }
                     }
                     if let Some(handle) = handle {
                         handle.shutdown();
                     }
-                    shared.persist(project);
+                    shared.persist(thread);
                     Ok(())
                 })();
                 if let Err(error) = result
-                    && shared.valid(project, generation)
+                    && shared.valid(thread, generation)
                 {
                     shared.event(
-                        project,
+                        thread,
                         generation,
                         Event::Error {
                             message: format!("{error:#}"),
@@ -566,7 +655,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Flush project history and wait for child processes to exit, outside the UI thread.
+    /// Flush thread history and wait for child processes to exit, outside the UI thread.
     pub fn shutdown(&self) {
         if self.shared.shutdown.swap(true, Ordering::AcqRel) {
             return;
@@ -578,17 +667,17 @@ impl AgentRuntime {
         // Persist before waiting for installer cleanup: the native application has a
         // bounded quit grace period, and a large staging directory may take longer.
         let ids: Vec<_> = {
-            let mut projects = self.shared.projects.lock().expect("project lock");
-            for state in projects.values_mut() {
+            let mut threads = self.shared.threads.lock().expect("thread lock");
+            for state in threads.values_mut() {
                 finish_turn(state, TurnOutcome::Failed, None);
                 if let Some(message) = streaming_message(state) {
                     message.status = MessageStatus::Interrupted;
                 }
             }
-            projects.keys().copied().collect()
+            threads.keys().copied().collect()
         };
-        for project in ids {
-            self.shared.persist(project);
+        for thread in ids {
+            self.shared.persist(thread);
         }
         for (_, connection) in connections {
             connection.shutdown();
@@ -600,20 +689,20 @@ impl AgentRuntime {
         }
     }
 
-    fn send_command(&self, project: ProjectId, command: AcpCommand) -> Result<(), String> {
+    fn send_command(&self, thread: ThreadId, command: AcpCommand) -> Result<(), String> {
         self.connections
             .lock()
             .expect("connection lock")
-            .get(&project)
+            .get(&thread)
             .ok_or("Connect Codex first.")?
             .send(command)
     }
 
     fn queue_prompt(
         &self,
-        project: ProjectId,
+        thread: ThreadId,
         generation: u64,
-        command: AcpCommand,
+        mut command: AcpCommand,
     ) -> Result<(), String> {
         let shared = self.shared.clone();
         let connections = self.connections.clone();
@@ -621,9 +710,9 @@ impl AgentRuntime {
             .name("relay-prompt".into())
             .spawn(move || {
                 // Persist uncertainty BEFORE sending: a crash must never skip unconfirmed context.
-                if !shared.persist(project) {
+                if !shared.persist(thread) {
                     shared.event(
-                        project,
+                        thread,
                         generation,
                         Event::Error {
                             message: "Could not save the pending turn. No prompt was sent.".into(),
@@ -631,7 +720,7 @@ impl AgentRuntime {
                         },
                     );
                     shared.event(
-                        project,
+                        thread,
                         generation,
                         Event::TurnEnded {
                             outcome: TurnOutcome::Failed,
@@ -640,10 +729,43 @@ impl AgentRuntime {
                     );
                     return;
                 }
+                if let Some(native) = &shared.native
+                    && let AcpCommand::Prompt { text, context } = &mut command
+                {
+                    let id = shared.threads.lock().expect("thread lock").get(&thread)
+                        .filter(|s|s.generation==generation)
+                        .and_then(|s|s.view.messages.iter().rev().find(|m|m.role==MessageRole::User)).map(|m|m.id);
+                    let Some(id) = id else { return };
+                    let result = (|| -> anyhow::Result<String> {
+                        native.track_turn(thread,id+1,text)?;
+                        let mut added = native.context(thread,text)?;
+                        if thread != native::OBSERVER {
+                            let sources = native.capture_user(thread,id,text)?;
+                            added.push_str(&format!("\nCurrent message evidence sources: {}. Background task reports are evidence, not user decisions.",serde_json::json!(sources)));
+                        }
+                        Ok(added)
+                    })();
+                    match result {
+                        Ok(added) => {
+                            let prior=context.take().unwrap_or_default();
+                            *context=Some(format!("{added}\n\n{prior}"));
+                            shared.update(thread,generation,|s| {
+                                if let Some(m)=streaming_message(s).and_then(|m|m.metrics.as_mut()) {
+                                    m.context_bytes=context.as_ref().map_or(0,String::len);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            shared.event(thread,generation,Event::Error {message:format!("Could not prepare native context: {e}"),fatal:false});
+                            shared.event(thread,generation,Event::TurnEnded {outcome:TurnOutcome::Failed,usage:None});
+                            return;
+                        }
+                    }
+                }
                 let result = {
-                    let projects = shared.projects.lock().expect("project lock");
-                    let Some(state) = projects
-                        .get(&project)
+                    let threads = shared.threads.lock().expect("thread lock");
+                    let Some(state) = threads
+                        .get(&thread)
                         .filter(|state| state.generation == generation)
                     else {
                         return;
@@ -652,9 +774,9 @@ impl AgentRuntime {
                         return;
                     }
                     if state.view.status == ConnectionStatus::Cancelling {
-                        drop(projects);
+                        drop(threads);
                         shared.event(
-                            project,
+                            thread,
                             generation,
                             Event::TurnEnded {
                                 outcome: TurnOutcome::Cancelled,
@@ -666,7 +788,7 @@ impl AgentRuntime {
                     connections
                         .lock()
                         .expect("connection lock")
-                        .get(&project)
+                        .get(&thread)
                         .ok_or_else(|| {
                             "The agent connection is closed. Reconnect to continue.".to_owned()
                         })
@@ -674,7 +796,7 @@ impl AgentRuntime {
                 };
                 if let Err(message) = result {
                     shared.event(
-                        project,
+                        thread,
                         generation,
                         Event::Error {
                             message,
@@ -682,7 +804,7 @@ impl AgentRuntime {
                         },
                     );
                     shared.event(
-                        project,
+                        thread,
                         generation,
                         Event::TurnEnded {
                             outcome: TurnOutcome::Failed,
@@ -703,28 +825,28 @@ impl AgentService for AgentRuntime {
     fn revision(&self) -> u64 {
         self.shared.revision.load(Ordering::Acquire)
     }
-    fn snapshot(&self, project: ProjectId) -> AgentSnapshot {
-        if let Err(error) = self.ensure_project(project) {
+    fn snapshot(&self, thread: ThreadId) -> AgentSnapshot {
+        if let Err(error) = self.ensure_thread(thread) {
             return AgentSnapshot {
                 error: Some(error),
                 ..Default::default()
             };
         }
         self.shared
-            .projects
+            .threads
             .lock()
-            .expect("project lock")
-            .get(&project)
+            .expect("thread lock")
+            .get(&thread)
             .map(|p| p.view.clone())
             .unwrap_or_default()
     }
 
-    fn dispatch(&self, project: ProjectId, command: AgentCommand) -> Result<(), String> {
-        self.dispatch_with_response(project, command, &mut None)
+    fn dispatch(&self, thread: ThreadId, command: AgentCommand) -> Result<(), String> {
+        self.dispatch_with_response(thread, command, &mut None)
     }
-    fn send_turn(&self, project: ProjectId, prompt: String) -> Result<u64, String> {
+    fn send_turn(&self, thread: ThreadId, prompt: String) -> Result<u64, String> {
         let mut response_id = None;
-        self.dispatch_with_response(project, AgentCommand::Send(prompt), &mut response_id)?;
+        self.dispatch_with_response(thread, AgentCommand::Send(prompt), &mut response_id)?;
         response_id.ok_or_else(|| "Cannot send an empty prompt.".into())
     }
 }
@@ -732,31 +854,27 @@ impl AgentService for AgentRuntime {
 impl AgentRuntime {
     fn dispatch_with_response(
         &self,
-        project: ProjectId,
+        thread: ThreadId,
         command: AgentCommand,
         response_id: &mut Option<u64>,
     ) -> Result<(), String> {
         if self.shared.shutdown.load(Ordering::Acquire) {
             return Err("Relay is shutting down.".into());
         }
-        self.ensure_project(project)?;
+        self.ensure_thread(thread)?;
         let definition = if matches!(command, AgentCommand::Send(_)) {
-            Some(
-                self.project_service
-                    .project(project)
-                    .ok_or("Unknown project")?,
-            )
+            Some(self.thread_service.thread(thread).ok_or("Unknown thread")?)
         } else {
             None
         };
         if let AgentCommand::Connect(source) = command {
-            return self.connect(project, source);
+            return self.connect(thread, source);
         }
         if matches!(command, AgentCommand::DiscoverLocal) {
             let shared = self.shared.clone();
             {
-                let mut projects = shared.projects.lock().expect("project lock");
-                let state = projects.get_mut(&project).ok_or("Unknown project")?;
+                let mut threads = shared.threads.lock().expect("thread lock");
+                let state = threads.get_mut(&thread).ok_or("Unknown thread")?;
                 if state.view.discovering {
                     return Ok(());
                 }
@@ -765,8 +883,8 @@ impl AgentRuntime {
             shared.revision.fetch_add(1, Ordering::Release);
             std::thread::spawn(move || {
                 let paths = installer::discover_local();
-                let mut projects = shared.projects.lock().expect("project lock");
-                if let Some(state) = projects.get_mut(&project) {
+                let mut threads = shared.threads.lock().expect("thread lock");
+                if let Some(state) = threads.get_mut(&thread) {
                     state.view.local_installations = paths;
                     state.view.discovering = false;
                     shared.revision.fetch_add(1, Ordering::Release);
@@ -776,11 +894,11 @@ impl AgentRuntime {
         }
         let mut persist = false;
         let mut prompt = None;
-        let mut projects = self.shared.projects.lock().expect("project lock");
-        let state = projects.get_mut(&project).ok_or("Unknown project")?;
+        let mut threads = self.shared.threads.lock().expect("thread lock");
+        let state = threads.get_mut(&thread).ok_or("Unknown thread")?;
         if state.storage_error {
             return Err(
-                "Resolve the project storage error before changing this conversation.".into(),
+                "Resolve the thread storage error before changing this conversation.".into(),
             );
         }
         match command {
@@ -796,14 +914,14 @@ impl AgentRuntime {
                 self.connections
                     .lock()
                     .expect("connection lock")
-                    .remove(&project);
+                    .remove(&thread);
                 persist = true;
             }
             AgentCommand::Authenticate(method) => {
                 if state.view.status != ConnectionStatus::NeedsAuthentication {
                     return Err("This connection is not waiting for sign-in.".into());
                 }
-                self.send_command(project, AcpCommand::Authenticate(method))?;
+                self.send_command(thread, AcpCommand::Authenticate(method))?;
                 state.view.status = ConnectionStatus::Authenticating;
                 state.view.error = None;
             }
@@ -828,7 +946,7 @@ impl AgentRuntime {
                     );
                 }
                 self.send_command(
-                    project,
+                    thread,
                     AcpCommand::SetConfig {
                         id: id.clone(),
                         value,
@@ -848,7 +966,7 @@ impl AgentRuntime {
                     return Ok(());
                 }
                 let snapshot =
-                    context::Snapshot::from_project(definition.as_ref().expect("send project"))
+                    context::Snapshot::from_thread(definition.as_ref().expect("send thread"))
                         .with_files_directory(files::workspace_directory(&self.shared.root));
                 let delivery = snapshot.delivery(if state.context_checkpoint.uncertain {
                     None
@@ -911,7 +1029,7 @@ impl AgentRuntime {
             }
             AgentCommand::Cancel => {
                 if state.view.status == ConnectionStatus::Running {
-                    self.send_command(project, AcpCommand::Cancel)?;
+                    self.send_command(thread, AcpCommand::Cancel)?;
                     state.view.status = ConnectionStatus::Cancelling;
                 }
             }
@@ -923,7 +1041,7 @@ impl AgentRuntime {
                         .last()
                         .is_some_and(|message| message.id == response_id)
                 {
-                    self.send_command(project, AcpCommand::Cancel)?;
+                    self.send_command(thread, AcpCommand::Cancel)?;
                     state.view.status = ConnectionStatus::Cancelling;
                 }
             }
@@ -936,7 +1054,7 @@ impl AgentRuntime {
                 }) {
                     return Err("That permission request is no longer active.".into());
                 }
-                self.send_command(project, AcpCommand::Permission { id, choice })?;
+                self.send_command(thread, AcpCommand::Permission { id, choice })?;
             }
             AgentCommand::SetWorkingDirectory(path) => {
                 if state.view.status.is_busy() {
@@ -960,17 +1078,17 @@ impl AgentRuntime {
                 self.connections
                     .lock()
                     .expect("connection lock")
-                    .remove(&project);
+                    .remove(&thread);
                 persist = true;
             }
             AgentCommand::Connect(_) | AgentCommand::DiscoverLocal => unreachable!(),
         }
-        drop(projects);
+        drop(threads);
         self.shared.revision.fetch_add(1, Ordering::Release);
         if let Some((generation, command)) = prompt {
-            if let Err(message) = self.queue_prompt(project, generation, command) {
+            if let Err(message) = self.queue_prompt(thread, generation, command) {
                 self.shared.event(
-                    project,
+                    thread,
                     generation,
                     Event::Error {
                         message: message.clone(),
@@ -978,7 +1096,7 @@ impl AgentRuntime {
                     },
                 );
                 self.shared.event(
-                    project,
+                    thread,
                     generation,
                     Event::TurnEnded {
                         outcome: TurnOutcome::Failed,
@@ -989,7 +1107,7 @@ impl AgentRuntime {
             }
         } else if persist {
             let shared = self.shared.clone();
-            std::thread::spawn(move || shared.persist(project));
+            std::thread::spawn(move || shared.persist(thread));
         }
         Ok(())
     }
@@ -1033,7 +1151,7 @@ fn history_context(messages: &[ChatMessage]) -> String {
     }
     history.reverse();
     format!(
-        "Relay restored this project's recent visible conversation because the previous agent session could not be reused. Treat this as historical context; answer the new user message that follows. Earlier material may be omitted.\n\n{}",
+        "Relay restored this thread's recent visible conversation because the previous agent session could not be reused. Treat this as historical context; answer the new user message that follows. Earlier material may be omitted.\n\n{}",
         history.join("\n\n")
     )
 }
@@ -1046,17 +1164,17 @@ mod tests {
     fn storage_error_logs_actual_cause_and_connect_preserves_it() {
         let root =
             std::env::temp_dir().join(format!("relay-storage-error-{}", installer::unique_id()));
-        let projects = Arc::new(ProjectStore::new(root.clone()));
-        let path = root.join("projects/1/conversation.json");
+        let threads = Arc::new(ThreadStore::new(root.clone()));
+        let path = root.join("threads/1/conversation.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = br#"{"version":99,"messages":[]}"#;
         std::fs::write(&path, original).unwrap();
-        let runtime = AgentRuntime::new(root.clone(), projects);
-        let cause = runtime.snapshot(ProjectId(1)).error.unwrap();
+        let runtime = AgentRuntime::new(root.clone(), threads);
+        let cause = runtime.snapshot(ThreadId(1)).error.unwrap();
         assert!(cause.contains("v99"));
         assert!(cause.contains("conversation.json"));
         let rejected = runtime
-            .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Auto))
+            .dispatch(ThreadId(1), AgentCommand::Connect(AgentSource::Auto))
             .unwrap_err();
         assert_eq!(cause, rejected, "connect must not mask the storage cause");
         runtime.shutdown();
@@ -1078,8 +1196,8 @@ mod tests {
     fn v3_history_and_identity_survive_reload_until_codex_is_chosen() {
         for harness in ["codex", "opencode"] {
             let root = std::env::temp_dir().join(format!("relay-v3-{}", installer::unique_id()));
-            let projects = Arc::new(ProjectStore::new(root.clone()));
-            let path = root.join("projects/1/conversation.json");
+            let threads = Arc::new(ThreadStore::new(root.clone()));
+            let path = root.join("threads/1/conversation.json");
             let original = serde_json::json!({
                 "version":3, "harness":harness, "provider":7, "provider_revision":2,
                 "local_executable":"/test/local-agent", "session_id":"other-session",
@@ -1087,8 +1205,8 @@ mod tests {
                 "messages":[{"id":1,"role":"assistant","text":"Keep this conversation","complete":true}]
             });
             store::write_json(&path, &original).unwrap();
-            let runtime = AgentRuntime::new(root.clone(), projects);
-            let snapshot = runtime.snapshot(ProjectId(1));
+            let runtime = AgentRuntime::new(root.clone(), threads);
+            let snapshot = runtime.snapshot(ThreadId(1));
             assert!(snapshot.error.is_none());
             assert_eq!(snapshot.messages[0].text, "Keep this conversation");
             assert_eq!(
@@ -1099,7 +1217,7 @@ mod tests {
                     AgentSource::Auto
                 }
             );
-            runtime.shared.persist(ProjectId(1));
+            runtime.shared.persist(ThreadId(1));
             let before: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             for key in [
@@ -1118,8 +1236,8 @@ mod tests {
                 );
             }
             {
-                let mut states = runtime.shared.projects.lock().unwrap();
-                let state = states.get_mut(&ProjectId(1)).unwrap();
+                let mut states = runtime.shared.threads.lock().unwrap();
+                let state = states.get_mut(&ThreadId(1)).unwrap();
                 let source = AgentSource::Local("/test/codex".into());
                 state.use_codex(&source);
                 state.view.source = source;
@@ -1128,7 +1246,7 @@ mod tests {
                 assert!(state.preferences.is_empty());
             }
             runtime.shutdown();
-            let after = store::load(&root, ProjectId(1)).unwrap();
+            let after = store::load(&root, ThreadId(1)).unwrap();
             assert_eq!(after.version, 3);
             assert_eq!(after.identity.harness.as_deref(), Some("codex"));
             assert!(after.identity.provider.is_none());
@@ -1141,38 +1259,38 @@ mod tests {
     fn runtime() -> AgentRuntime {
         let root =
             std::env::temp_dir().join(format!("relay-state-test-{}", installer::unique_id()));
-        let projects = Arc::new(ProjectStore::new(root.clone()));
-        projects
-            .apply(relay_core::projects::ProjectCommand::Create(
-                relay_core::projects::ProjectDraft {
+        let threads = Arc::new(ThreadStore::new(root.clone()));
+        threads
+            .apply(relay_core::threads::ThreadCommand::Create(
+                relay_core::threads::ThreadDraft {
                     name: "Second".into(),
                     ..Default::default()
                 },
             ))
             .unwrap();
-        AgentRuntime::new(root, projects)
+        AgentRuntime::new(root, threads)
     }
     #[test]
-    fn late_events_cannot_mutate_a_replaced_session_or_another_project() {
+    fn late_events_cannot_mutate_a_replaced_session_or_another_thread() {
         let runtime = runtime();
         runtime
             .shared
-            .projects
+            .threads
             .lock()
             .unwrap()
-            .get_mut(&ProjectId(1))
+            .get_mut(&ThreadId(1))
             .unwrap()
             .generation = 2;
         runtime.shared.event(
-            ProjectId(1),
+            ThreadId(1),
             1,
             Event::Error {
                 message: "old connection".into(),
                 fatal: true,
             },
         );
-        assert!(runtime.snapshot(ProjectId(1)).error.is_none());
-        assert!(runtime.snapshot(ProjectId(2)).error.is_none());
+        assert!(runtime.snapshot(ThreadId(1)).error.is_none());
+        assert!(runtime.snapshot(ThreadId(2)).error.is_none());
     }
     #[test]
     fn model_choice_is_not_optimistically_committed() {
@@ -1180,7 +1298,7 @@ mod tests {
         assert!(
             runtime
                 .dispatch(
-                    ProjectId(1),
+                    ThreadId(1),
                     AgentCommand::SetConfig {
                         id: "model".into(),
                         value: "invented".into()
@@ -1188,18 +1306,18 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(runtime.snapshot(ProjectId(1)).model().is_none());
+        assert!(runtime.snapshot(ThreadId(1)).model().is_none());
     }
 
     #[test]
-    fn projects_restore_independently_and_unfinished_turns_remain_interrupted() {
+    fn threads_restore_independently_and_unfinished_turns_remain_interrupted() {
         let runtime = runtime();
         let root = runtime.shared.root.clone();
-        for (project, text, status) in [
-            (ProjectId(1), "Partial", MessageStatus::Streaming),
-            (ProjectId(2), "Other project", MessageStatus::Complete),
+        for (thread, text, status) in [
+            (ThreadId(1), "Partial", MessageStatus::Streaming),
+            (ThreadId(2), "Other thread", MessageStatus::Complete),
         ] {
-            runtime.shared.update(project, 0, |state| {
+            runtime.shared.update(thread, 0, |state| {
                 state.view.messages.push(ChatMessage {
                     id: 1,
                     role: MessageRole::Assistant,
@@ -1211,18 +1329,18 @@ mod tests {
             });
         }
         drop(runtime);
-        let restored = AgentRuntime::new(root.clone(), Arc::new(ProjectStore::new(root.clone())));
-        assert_eq!(restored.snapshot(ProjectId(1)).messages[0].text, "Partial");
+        let restored = AgentRuntime::new(root.clone(), Arc::new(ThreadStore::new(root.clone())));
+        assert_eq!(restored.snapshot(ThreadId(1)).messages[0].text, "Partial");
         assert_eq!(
-            restored.snapshot(ProjectId(1)).messages[0].status,
+            restored.snapshot(ThreadId(1)).messages[0].status,
             MessageStatus::Interrupted
         );
         assert_eq!(
-            restored.snapshot(ProjectId(2)).messages[0].text,
-            "Other project"
+            restored.snapshot(ThreadId(2)).messages[0].text,
+            "Other thread"
         );
         assert_eq!(
-            restored.snapshot(ProjectId(2)).messages[0].status,
+            restored.snapshot(ThreadId(2)).messages[0].status,
             MessageStatus::Complete
         );
         drop(restored);
@@ -1234,13 +1352,13 @@ mod tests {
         let runtime = runtime();
         let root = runtime.shared.root.clone();
         drop(runtime);
-        let path = root.join("projects/1/conversation.json");
+        let path = root.join("threads/1/conversation.json");
         std::fs::write(&path, "damaged original").unwrap();
-        let restored = AgentRuntime::new(root.clone(), Arc::new(ProjectStore::new(root.clone())));
-        assert!(restored.snapshot(ProjectId(1)).error.is_some());
+        let restored = AgentRuntime::new(root.clone(), Arc::new(ThreadStore::new(root.clone())));
+        assert!(restored.snapshot(ThreadId(1)).error.is_some());
         assert!(
             restored
-                .dispatch(ProjectId(1), AgentCommand::Connect(AgentSource::Auto))
+                .dispatch(ThreadId(1), AgentCommand::Connect(AgentSource::Auto))
                 .is_err()
         );
         drop(restored);
@@ -1251,11 +1369,11 @@ mod tests {
     #[test]
     fn unrelated_config_notifications_do_not_confirm_a_pending_selection() {
         let runtime = runtime();
-        runtime.shared.update(ProjectId(1), 0, |state| {
+        runtime.shared.update(ThreadId(1), 0, |state| {
             state.view.pending_config = Some("model".into())
         });
         runtime.shared.event(
-            ProjectId(1),
+            ThreadId(1),
             0,
             Event::Configs {
                 configs: vec![],
@@ -1263,20 +1381,20 @@ mod tests {
             },
         );
         assert_eq!(
-            runtime.snapshot(ProjectId(1)).pending_config.as_deref(),
+            runtime.snapshot(ThreadId(1)).pending_config.as_deref(),
             Some("model")
         );
         runtime.shared.event(
-            ProjectId(1),
+            ThreadId(1),
             0,
             Event::Error {
                 message: "Unavailable".into(),
                 fatal: false,
             },
         );
-        assert!(runtime.snapshot(ProjectId(1)).pending_config.is_none());
+        assert!(runtime.snapshot(ThreadId(1)).pending_config.is_none());
         assert!(
-            runtime.shared.projects.lock().unwrap()[&ProjectId(1)]
+            runtime.shared.threads.lock().unwrap()[&ThreadId(1)]
                 .preferences
                 .is_empty()
         );

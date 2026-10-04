@@ -2,27 +2,27 @@ use super::*;
 
 impl Workbench {
     fn composer(&self, cx: &mut Context<Self>) -> Div {
-        let draft = &self.drafts[self.selected_project];
+        let draft = &self.drafts[self.selected_thread];
         let is_empty = draft.read(cx).value().trim().is_empty();
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let running = matches!(
             state.status,
             ConnectionStatus::Running | ConnectionStatus::Cancelling
         );
         composer_surface()
-            .when(self.routing.pending_send.is_some(), |view| {
+            .when(self.pending_send.is_some(), |view| {
                 view.child(
                     row()
                         .justify_between()
                         .mb(px(8.))
-                        .child(muted(self.text(Text::RoutingWaiting)).text_size(px(13.)))
+                        .child(muted(self.text(Text::ConnectionWaiting)).text_size(px(13.)))
                         .child(
                             Button::new("cancel-routed-send")
                                 .ghost()
                                 .small()
                                 .label(self.text(Text::Cancel))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.routing.pending_send = None;
+                                    this.pending_send = None;
                                     cx.notify();
                                 })),
                         ),
@@ -93,7 +93,7 @@ impl Workbench {
     }
 
     pub(super) fn conversation(&self, compact: bool, cx: &mut Context<Self>) -> Div {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let weak = cx.entity().downgrade();
         column()
             .flex_1()
@@ -312,7 +312,7 @@ impl Workbench {
                             .child(self.quick_action(
                                 3,
                                 IconName::Sparkles,
-                                self.text(Text::PlanProject),
+                                self.text(Text::PlanThread),
                                 self.text(Text::PlanPrompt),
                                 cx,
                             )),

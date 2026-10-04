@@ -16,7 +16,7 @@ pub(super) async fn transcribe(config: &Config, wav: &[u8]) -> Result<String, St
             "task_group":"audio", "task":"asr", "function":"recognition", "model":MODEL,
             "parameters": {"format":"pcm", "sample_rate":16000,
                 "intermediate_result_enabled":false, "disfluency_removal_enabled":false,
-                "vocabulary":{"Relay":5,"Jev":5}, "max_sentence_silence":800}, "input":{}
+                "vocabulary":{"Relay":5}, "max_sentence_silence":800}, "input":{}
         }),
     )
     .await?;

@@ -14,6 +14,43 @@ fn fixture(saved: Option<String>) -> (ConnectionHandle, mpsc::Receiver<Event>) {
     })
 }
 
+#[test]
+fn native_mcp_scope_is_delivered_to_both_new_and_resumed_sessions() {
+    for saved in [None, Some("session-1".to_owned())] {
+        let (connection, events) = fixture_with_options(SessionOptions {
+            saved_session: saved,
+            mcp_servers: vec![relay_acp::StdioMcpServer {
+                name: "relay".into(),
+                command: "/Applications/Relay App/relay".into(),
+                args: vec![
+                    "--relay-mcp".into(),
+                    "/tmp/personal data".into(),
+                    "42".into(),
+                ],
+            }],
+            ..Default::default()
+        });
+        wait(&events, |e| matches!(e, Event::Ready { .. }));
+        connection
+            .send(Command::Prompt {
+                text: "echo-servers".into(),
+                context: None,
+            })
+            .unwrap();
+        let Event::Text(text) = wait(&events, |e| matches!(e, Event::Text(_))) else {
+            unreachable!()
+        };
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value[0]["name"], "relay");
+        assert_eq!(value[0]["command"], "/Applications/Relay App/relay");
+        assert_eq!(
+            value[0]["args"],
+            serde_json::json!(["--relay-mcp", "/tmp/personal data", "42"])
+        );
+        connection.shutdown();
+    }
+}
+
 fn fixture_with_options(options: SessionOptions) -> (ConnectionHandle, mpsc::Receiver<Event>) {
     fixture_config(options, false)
 }
@@ -48,6 +85,7 @@ fn fixture_config(
 fn sign_in_opens_the_session_and_restores_the_model_preference() {
     let (connection, events) = fixture_config(
         SessionOptions {
+            mcp_servers: vec![],
             saved_session: None,
             preferences: BTreeMap::from([("deployment".into(), "private-b".into())]),
         },
@@ -71,6 +109,7 @@ fn sign_in_opens_the_session_and_restores_the_model_preference() {
 #[test]
 fn saved_model_is_restored_before_the_session_becomes_ready() {
     let (_connection, events) = fixture_with_options(SessionOptions {
+        mcp_servers: vec![],
         saved_session: None,
         preferences: BTreeMap::from([
             ("deployment".into(), "private-b".into()),
@@ -286,20 +325,20 @@ fn cancelling_a_turn_dismisses_a_pending_permission() {
 }
 
 #[test]
-fn project_context_precedes_new_message_and_cache_usage_is_preserved() {
+fn thread_context_precedes_new_message_and_cache_usage_is_preserved() {
     let (connection, events) = fixture(None);
     wait(&events, |e| matches!(e, Event::Ready { .. }));
     connection
         .send(Command::Prompt {
             text: "echo-context".into(),
-            context: Some("Stable project context\n资料".into()),
+            context: Some("Stable thread context\n资料".into()),
         })
         .unwrap();
     let Event::Text(text) = wait(&events, |e| matches!(e, Event::Text(_))) else {
         unreachable!()
     };
     let prompt: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(prompt[0]["text"], "Stable project context\n资料");
+    assert_eq!(prompt[0]["text"], "Stable thread context\n资料");
     assert_eq!(prompt[1]["text"], "echo-context");
     let Event::TurnEnded { outcome, usage } =
         wait(&events, |e| matches!(e, Event::TurnEnded { .. }))

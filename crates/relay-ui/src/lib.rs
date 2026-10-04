@@ -12,6 +12,6 @@ pub use voice::{EndVoiceSession, VoicePanel};
 
 pub use locale::{OpenQuick, OpenWorkspace, Quit, apply_language};
 pub use workbench::{
-    FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenProject, RequestAccessibility,
+    FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenThread, RequestAccessibility,
     ResizeQuick, SaveFile, SendMessage, Workbench,
 };

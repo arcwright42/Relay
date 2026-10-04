@@ -22,6 +22,7 @@ fn reply(id: Value, result: Value) {
 fn main() {
     let mut current = "private-a".to_owned();
     let mut pending = None;
+    let mut servers = json!([]);
     let mut authenticated = std::env::var_os("RELAY_FIXTURE_AUTH").is_none();
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else {
@@ -43,11 +44,15 @@ fn main() {
                     json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"Sign in first"}}),
                 );
             }
-            Some("session/new") => reply(
-                id,
-                json!({"sessionId":"session-1","configOptions":config(&current)}),
-            ),
+            Some("session/new") => {
+                servers = request["params"]["mcpServers"].clone();
+                reply(
+                    id,
+                    json!({"sessionId":"session-1","configOptions":config(&current)}),
+                );
+            }
             Some("session/load") => {
+                servers = request["params"]["mcpServers"].clone();
                 chunk("DO NOT DUPLICATE RESTORED HISTORY");
                 reply(id, json!({"configOptions":config(&current)}));
             }
@@ -70,6 +75,10 @@ fn main() {
                     .as_str()
                     .unwrap();
                 match text {
+                    "echo-servers" => {
+                        chunk(&servers.to_string());
+                        reply(id, json!({"stopReason":"end_turn"}));
+                    }
                     "echo-context" => {
                         chunk(&request["params"]["prompt"].to_string());
                         reply(

@@ -1,4 +1,4 @@
-//! Application preferences are independent of projects and agent sessions.
+//! Application preferences are independent of threads and agent sessions.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Language {

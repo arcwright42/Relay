@@ -121,6 +121,7 @@ fn validate_package(package: &Value) -> Result<()> {
         ],
         "relay-runtime" => &[
             "anyhow",
+            "rusqlite",
             "dotenvy",
             "relay-core",
             "relay-acp",

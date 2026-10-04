@@ -2,101 +2,62 @@ use super::*;
 
 impl Workbench {
     pub(super) fn home(&self, cx: &mut Context<Self>) -> Div {
-        column().flex_1().min_h_0().child(
-            column()
-                .flex_1()
-                .min_h_0()
-                .id("home-projects-scroll")
-                .overflow_y_scroll()
-                .items_center()
-                .px(px(32.))
-                .child(
-                    column()
-                        .w_full()
-                        .max_w(px(CONTENT_WIDTH))
-                        .flex_shrink_0()
-                        .my_auto()
-                        .pt(px(40.))
-                        .pb(px(96.))
-                        .gap(px(26.))
-                        .child(
-                            div()
-                                .text_center()
-                                .text_size(px(28.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(self.text(Text::HomePrompt)),
-                        )
-                        .child(self.routing_composer(cx))
-                        .when_some(self.project_error.as_ref(), |view, error| {
-                            view.child(div().text_color(rgb(0x9a542a)).child(error.clone()))
-                        })
-                        .child(
-                            column()
-                                .gap(px(10.))
-                                .child(
-                                    row()
-                                        .justify_between()
-                                        .child(muted(self.text(Text::Projects)).text_size(px(13.)))
-                                        .child(
-                                            Button::new("home-new-project")
-                                                .ghost()
-                                                .small()
-                                                .icon(icon(IconName::Plus).size(px(14.)))
-                                                .label(self.text(Text::NewProject))
-                                                .text_size(px(13.))
-                                                .disabled(self.project_error.is_some())
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.edit_project(None, window, cx)
-                                                })),
-                                        ),
-                                )
-                                .child(row().gap(px(8.)).flex_wrap().children(
-                                    self.projects.iter().enumerate().take(3).map(
-                                        |(index, project)| {
-                                            Button::new(("home-project", index))
-                                                .ghost()
-                                                .flex_1()
-                                                .min_w(px(150.))
-                                                .h(px(48.))
-                                                .px(px(14.))
-                                                .rounded(px(12.))
-                                                .border_1()
-                                                .border_color(rgb(LINE))
-                                                .accessibility_label(project.name.clone())
-                                                .when(!project.description.is_empty(), |button| {
-                                                    button.tooltip(project.description.clone())
-                                                })
-                                                .child(
-                                                    row()
-                                                        .w_full()
-                                                        .gap(px(9.))
-                                                        .child(
-                                                            icon(project_icon(index)).size(px(16.)),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .min_w_0()
-                                                                .flex_1()
-                                                                .truncate()
-                                                                .text_size(px(13.))
-                                                                .child(project.name.clone()),
-                                                        ),
-                                                )
-                                                .on_click(cx.listener(
-                                                    move |this, _, window, cx| {
-                                                        this.navigate(
-                                                            Page::Project(index),
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                ))
-                                        },
-                                    ),
-                                )),
-                        ),
-                ),
-        )
+        if self.threads.is_empty() {
+            return column().child(muted(
+                self.thread_error
+                    .clone()
+                    .unwrap_or_else(|| "Could not load Relay".into()),
+            ));
+        }
+        if self.agent_states[self.selected_thread].messages.is_empty() {
+            self.welcome(false, cx)
+        } else {
+            self.conversation(false, cx)
+        }
+    }
+
+    pub(super) fn activity(&self, cx: &mut Context<Self>) -> Div {
+        let tasks = self.thread_service.activity();
+        let list = column()
+            .id("task-activity")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(32.))
+            .py(px(24.))
+            .gap(px(12.))
+            .when(tasks.is_empty(), |view| {
+                view.child(muted(self.text(Text::InboxEmpty)))
+            })
+            .children(tasks.into_iter().map(|task| {
+                let id = task.thread;
+                let status = match task.state.as_str() {
+                    "queued" => self.text(Text::TaskQueued),
+                    "working" => self.text(Text::TaskWorking),
+                    "waiting" => self.text(Text::TaskWaiting),
+                    "review" => self.text(Text::TaskReview),
+                    "completed" => self.text(Text::TaskCompleted),
+                    "interrupted" => self.text(Text::TaskInterrupted),
+                    _ => self.text(Text::TaskFailed),
+                };
+                column()
+                    .p(px(16.))
+                    .border_1()
+                    .border_color(rgb(LINE))
+                    .rounded(px(12.))
+                    .gap(px(8.))
+                    .child(
+                        Button::new(("open-task", id.0 as usize))
+                            .ghost()
+                            .label(task.name)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_thread(id, window, cx)
+                            })),
+                    )
+                    .child(muted(status))
+                    .child(div().text_size(px(14.)).child(task.summary))
+            }));
+        column().flex_1().min_h_0().child(list)
     }
 
     pub(super) fn settings(&self, cx: &mut Context<Self>) -> Div {
@@ -190,7 +151,6 @@ impl Workbench {
                     "",
                 ))
                 .child(self.voice_settings(cx))
-                .child(self.routing_settings(cx))
                 .child(Self::setting_row(
                     self.text(Text::Workspace),
                     self.text(Text::Local),

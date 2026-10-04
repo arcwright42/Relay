@@ -1,14 +1,14 @@
-use relay_core::ProjectId;
+use relay_core::ThreadId;
 use std::{fs, io::Write, path::Path, time::SystemTime};
 
 /// Persistent errors are available even when macOS launches Relay without a
 /// terminal. Callers pass errors only, never prompts, selections or snapshots.
-pub(crate) fn error(root: &Path, project: ProjectId, operation: &str, message: &str) {
+pub(crate) fn error(root: &Path, thread: ThreadId, operation: &str, message: &str) {
     let entry = serde_json::json!({
         "time_unix_ms": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default().as_millis(),
         "pid": std::process::id(),
-        "project": project.0,
+        "thread": thread.0,
         "operation": operation,
         "error": message,
     });

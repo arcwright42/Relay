@@ -40,10 +40,10 @@ impl Workbench {
     pub(super) fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> Div {
         let query = self.search.read(cx).value().trim().to_lowercase();
         let visible: Vec<_> = self
-            .projects
+            .threads
             .iter()
             .enumerate()
-            .filter(|(_, project)| project.name.to_lowercase().contains(&query))
+            .filter(|(_, thread)| thread.id.0 != 0 && thread.name.to_lowercase().contains(&query))
             .collect();
         column()
             .w(px(if compact { 224. } else { 240. }))
@@ -87,7 +87,7 @@ impl Workbench {
                                     .text_color(rgb(0x6c6c72)),
                             )
                             .suffix(muted("⌘K").text_size(px(13.)))
-                            .aria_label(self.text(Text::SearchProjects))
+                            .aria_label(self.text(Text::SearchThreads))
                             .context_menu(crate::locale::input_menu),
                     ),
             )
@@ -129,39 +129,27 @@ impl Workbench {
                     .px(px(10.))
                     .mt(px(22.))
                     .mb(px(5.))
-                    .child(muted(self.text(Text::Projects)).text_size(px(13.)))
-                    .child(
-                        icon_button(
-                            "create-project",
-                            IconName::Plus,
-                            self.text(Text::NewProject),
-                        )
-                        .size(px(26.))
-                        .disabled(self.project_error.is_some())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.edit_project(None, window, cx)),
-                        ),
-                    ),
+                    .child(muted(self.text(Text::Threads)).text_size(px(13.))),
             )
             .child(
                 column()
-                    .id("sidebar-projects")
+                    .id("sidebar-threads")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .gap(px(3.))
-                    .children(visible.iter().map(|(index, project)| {
+                    .children(visible.iter().map(|(index, thread)| {
                         self.nav_button(
-                            ("project", *index),
-                            project.name.clone(),
-                            project_icon(*index),
-                            Page::Project(*index),
+                            ("thread", *index),
+                            thread.name.clone(),
+                            thread_icon(*index),
+                            Page::Thread(*index),
                             cx,
                         )
                     }))
                     .when(visible.is_empty(), |this| {
                         this.child(
-                            muted(self.text(Text::NoProjects))
+                            muted(self.text(Text::NoThreads))
                                 .px(px(12.))
                                 .py(px(10.))
                                 .text_size(px(13.)),
@@ -192,8 +180,8 @@ impl Workbench {
 
     pub(super) fn header(&self, cx: &mut Context<Self>) -> Div {
         let title = match self.page {
-            Page::Project(index) => self.projects[index].name.as_str(),
-            Page::Home => "",
+            Page::Thread(index) => self.threads[index].name.as_str(),
+            Page::Home => "Relay",
             Page::Inbox => self.text(Text::Inbox),
             Page::Sessions => self.text(Text::ClientSessions),
             Page::Files => self.text(Text::Files),
@@ -215,42 +203,42 @@ impl Workbench {
                     .child(title.to_owned())
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
             )
-            .when(matches!(self.page, Page::Project(_)), |view| {
+            .when(matches!(self.page, Page::Thread(_)), |view| {
                 view.child(
                     row()
                         .gap(px(7.))
                         .child(
                             icon_button(
-                                "project-members",
+                                "thread-members",
                                 IconName::Settings,
-                                self.text(Text::ProjectDetails),
+                                self.text(Text::ThreadDetails),
                             )
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
-                                    if let Some(project) =
-                                        this.projects.get(this.selected_project).cloned()
+                                    if let Some(thread) =
+                                        this.threads.get(this.selected_thread).cloned()
                                     {
-                                        this.edit_project(Some(project), window, cx);
+                                        this.edit_thread(Some(thread), window, cx);
                                     }
                                 },
                             )),
                         )
                         .child(
-                            icon_button("project-menu", IconName::Layers, self.text(Text::Context))
+                            icon_button("thread-menu", IconName::Layers, self.text(Text::Context))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.show_context(window, cx);
                                 })),
                         )
                         .child(
                             icon_button(
-                                "project-client-sessions",
+                                "thread-client-sessions",
                                 IconName::List,
                                 self.text(Text::ClientSessions),
                             )
                             .on_click(cx.listener(
                                 |this, _, window, cx| {
                                     this.client_session_filter =
-                                        this.projects.get(this.selected_project).map(|p| p.id);
+                                        this.threads.get(this.selected_thread).map(|p| p.id);
                                     this.navigate(Page::Sessions, window, cx);
                                 },
                             )),

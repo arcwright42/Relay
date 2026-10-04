@@ -74,10 +74,27 @@ pub fn notification(update: acp::SessionUpdate) -> Option<Event> {
 }
 
 fn tool(value: Value) -> Option<Event> {
+    let evidence = |value: &Value| {
+        if value.is_null() {
+            return String::new();
+        }
+        let raw = value.to_string();
+        let mut result: String = raw.chars().take(16000).collect();
+        if raw.chars().count() > 16000 {
+            result.push_str("\n[tool evidence truncated]");
+        }
+        result
+    };
     Some(Event::Tool(ToolActivity {
         id: value["toolCallId"].as_str()?.into(),
         title: value["title"].as_str().unwrap_or("").into(),
         status: value["status"].as_str().unwrap_or("").into(),
+        input: evidence(&value["rawInput"]),
+        output: evidence(if value["rawOutput"].is_null() {
+            &value["content"]
+        } else {
+            &value["rawOutput"]
+        }),
     }))
 }
 

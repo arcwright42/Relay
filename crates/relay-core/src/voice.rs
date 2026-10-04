@@ -1,10 +1,6 @@
 //! Voice wake, continuous capture and transcription contracts, independent of UI.
 mod speech;
-use crate::{
-    ProjectId,
-    routing::{RouteTarget, RoutingError},
-    settings::Language,
-};
+use crate::{ThreadId, settings::Language};
 pub use speech::spoken_text;
 use std::{
     path::PathBuf,
@@ -84,8 +80,6 @@ pub struct VoiceSessionSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoiceTurnStage {
     Transcribing,
-    Routing,
-    ChoosingProject,
     Connecting,
     WaitingForAgent,
     NeedsAttention,
@@ -98,8 +92,7 @@ pub enum VoiceTurnStage {
 pub enum VoiceTurnError {
     AsrNotConfigured,
     Transcription(String),
-    Routing(RoutingError),
-    CatalogChanged,
+    ThreadUnavailable,
     AgentBusy,
     AgentAuthentication,
     Agent(String),
@@ -110,16 +103,9 @@ pub enum VoiceTurnError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VoiceProject {
-    pub id: ProjectId,
+pub struct VoiceThread {
+    pub id: ThreadId,
     pub name: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VoiceRouteChoice {
-    pub target: RouteTarget,
-    /// None identifies the localized “new project” option.
-    pub project_name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,38 +114,25 @@ pub struct VoiceTurnSnapshot {
     pub stage: VoiceTurnStage,
     pub prompt: String,
     pub response: String,
-    pub project: Option<VoiceProject>,
-    pub choices: Vec<VoiceRouteChoice>,
-    pub catalog_revision: Option<u64>,
+    pub thread: Option<VoiceThread>,
     pub error: Option<VoiceTurnError>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct VoiceRouteSelection {
-    pub target: RouteTarget,
-    pub catalog_revision: u64,
 }
 
 pub enum VoicePromptProgress {
     Stage(VoiceTurnStage),
-    Project(VoiceProject),
+    Thread(VoiceThread),
     Response(String),
 }
 
 pub enum VoicePromptResult {
     Reply(String),
-    ChooseProject {
-        catalog_revision: u64,
-        choices: Vec<VoiceRouteChoice>,
-    },
 }
 
-/// Project routing and execution are independent of microphone and ASR providers.
+/// Main-conversation execution is independent of microphone and ASR providers.
 pub trait VoicePromptService: Send + Sync {
     fn respond(
         &self,
         prompt: &str,
-        selection: Option<VoiceRouteSelection>,
         cancelled: &AtomicBool,
         progress: &dyn Fn(VoicePromptProgress),
     ) -> Result<VoicePromptResult, VoiceTurnError>;
@@ -230,7 +203,6 @@ pub trait VoiceService: Send + Sync {
     /// A stale window may only end the session it was opened for.
     fn end_session(&self, session_id: u64);
     fn resume_listening(&self, session_id: u64);
-    fn choose_project(&self, session_id: u64, turn_id: u64, target: RouteTarget);
 }
 
 /// Resource and native ports carry no third-party model handles.
@@ -290,7 +262,6 @@ impl VoiceService for EmptyVoiceService {
     fn start_session(&self) {}
     fn end_session(&self, _: u64) {}
     fn resume_listening(&self, _: u64) {}
-    fn choose_project(&self, _: u64, _: u64, _: RouteTarget) {}
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 //! Read-only native client archives are independent of Relay's execution sessions.
-use crate::{ProjectId, agents::MessageRole};
+use crate::{ThreadId, agents::MessageRole};
 use std::{path::PathBuf, sync::Arc};
 
 pub const CLIENT_SYNC_INTERVAL_SECS: u64 = 30 * 60;
@@ -15,7 +15,7 @@ pub struct ClientSession {
     pub title: String,
     pub working_directory: PathBuf,
     pub source: PathBuf,
-    pub project: Option<ProjectId>,
+    pub thread: Option<ThreadId>,
     pub updated_at: String,
     pub message_count: usize,
     pub available: bool,
@@ -56,7 +56,7 @@ pub enum ClientSessionsCommand {
     Open(ClientSessionId),
     Assign {
         session: ClientSessionId,
-        project: Option<ProjectId>,
+        thread: Option<ThreadId>,
     },
 }
 

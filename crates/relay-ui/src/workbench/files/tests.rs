@@ -73,7 +73,7 @@ fn changing_folders_while_loading_cannot_publish_an_old_listing(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-fn a_file_link_opens_in_the_personal_space_without_a_project(cx: &mut TestAppContext) {
+fn a_file_link_opens_in_the_personal_space_without_a_thread(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.add_window(|window, cx| {
         let mut view = FilesView::new(Language::SimplifiedChinese, window, cx);

@@ -4,7 +4,7 @@ mod codex;
 mod tests;
 
 use anyhow::{Context, Result, bail, ensure};
-use relay_core::{ProjectId, agents::AgentService, projects::ProjectService, sessions::*};
+use relay_core::{ThreadId, agents::AgentService, sessions::*, threads::ThreadService};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -26,7 +26,8 @@ struct SavedSession {
     title: String,
     working_directory: PathBuf,
     source: PathBuf,
-    project: Option<u64>,
+    #[serde(default, alias = "project")]
+    thread: Option<u64>,
     updated_at: String,
     message_count: usize,
     available: bool,
@@ -45,7 +46,7 @@ impl SavedSession {
             title: self.title.clone(),
             working_directory: self.working_directory.clone(),
             source: self.source.clone(),
-            project: self.project.map(ProjectId),
+            thread: self.thread.map(ThreadId),
             updated_at: self.updated_at.clone(),
             message_count: self.message_count,
             available: self.available,
@@ -133,7 +134,7 @@ pub struct ClientSessionStore {
 impl ClientSessionStore {
     pub fn new(
         root: PathBuf,
-        projects: Arc<dyn ProjectService>,
+        threads: Arc<dyn ThreadService>,
         agents: Arc<dyn AgentService>,
     ) -> Self {
         let home = std::env::var_os("CODEX_HOME")
@@ -141,13 +142,13 @@ impl ClientSessionStore {
             .unwrap_or_else(|| {
                 PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".codex")
             });
-        Self::with_home(root, home, projects, agents)
+        Self::with_home(root, home, threads, agents)
     }
 
     fn with_home(
         root: PathBuf,
         home: PathBuf,
-        projects: Arc<dyn ProjectService>,
+        threads: Arc<dyn ThreadService>,
         agents: Arc<dyn AgentService>,
     ) -> Self {
         let directory = root.join("client-sessions");
@@ -200,11 +201,11 @@ impl ClientSessionStore {
                 let is_sync = matches!(command, ClientSessionsCommand::Sync);
                 let result = match command {
                     ClientSessionsCommand::Sync => {
-                        sync(&directory, &home, &mut index, &projects, &agents, &state)
+                        sync(&directory, &home, &mut index, &threads, &agents, &state)
                     }
                     ClientSessionsCommand::Open(id) => open(&directory, &index, &id, &state),
-                    ClientSessionsCommand::Assign { session, project } => {
-                        assign(&directory, &mut index, &session, project, &projects, &state)
+                    ClientSessionsCommand::Assign { session, thread } => {
+                        assign(&directory, &mut index, &session, thread, &threads, &state)
                     }
                 };
                 if let Err(error) = result {
@@ -380,22 +381,22 @@ fn assign(
     directory: &Path,
     index: &mut Index,
     id: &ClientSessionId,
-    project: Option<ProjectId>,
-    projects: &Arc<dyn ProjectService>,
+    thread: Option<ThreadId>,
+    threads: &Arc<dyn ThreadService>,
     shared: &Shared,
 ) -> Result<()> {
     ensure!(
-        project.is_none_or(|p| projects.project(p).is_some()),
-        "Unknown project"
+        thread.is_none_or(|p| threads.thread(p).is_some()),
+        "Unknown thread"
     );
     ensure!(index.sessions.contains_key(&id.0), "Unknown local session");
     let mut updated = index.clone();
-    updated.bindings.insert(id.0.clone(), project.map(|p| p.0));
+    updated.bindings.insert(id.0.clone(), thread.map(|p| p.0));
     updated
         .sessions
         .get_mut(&id.0)
         .expect("known session")
-        .project = project.map(|p| p.0);
+        .thread = thread.map(|p| p.0);
     crate::store::write_json(&directory.join("index.json"), &updated)?;
     *index = updated;
     shared.publish(index);
@@ -403,7 +404,7 @@ fn assign(
     Ok(())
 }
 
-fn project_for(cwd: &Path, workspaces: &[(PathBuf, ProjectId)]) -> Option<u64> {
+fn thread_for(cwd: &Path, workspaces: &[(PathBuf, ThreadId)]) -> Option<u64> {
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
     let mut matches = workspaces.iter().filter(|(path, _)| *path == cwd);
     let first = matches.next()?;
@@ -414,7 +415,7 @@ fn sync(
     directory: &Path,
     home: &Path,
     index: &mut Index,
-    projects: &Arc<dyn ProjectService>,
+    threads: &Arc<dyn ThreadService>,
     agents: &Arc<dyn AgentService>,
     shared: &Shared,
 ) -> Result<()> {
@@ -425,9 +426,9 @@ fn sync(
         v.updated_sessions = 0;
         v.failed_files = 0;
     });
-    let workspaces: Vec<_> = projects
+    let workspaces: Vec<_> = threads
         .snapshot()
-        .projects
+        .threads
         .iter()
         .map(|p| {
             let cwd = agents.snapshot(p.id).working_directory;
@@ -466,11 +467,11 @@ fn sync(
                 {
                     return Ok(());
                 }
-                cached.project = updated
+                cached.thread = updated
                     .bindings
                     .get(&cached.id().0)
                     .copied()
-                    .unwrap_or_else(|| project_for(&cached.working_directory, &workspaces));
+                    .unwrap_or_else(|| thread_for(&cached.working_directory, &workspaces));
                 updated.sessions.insert(cached.id().0, cached);
                 return Ok(());
             }
@@ -492,10 +493,11 @@ fn sync(
             };
             let (mut archive, content_changed) =
                 codex::read(source, metadata, previous, &shared.stopped)?;
-            archive.session.project =
-                updated.bindings.get(&id.0).copied().unwrap_or_else(|| {
-                    project_for(&archive.session.working_directory, &workspaces)
-                });
+            archive.session.thread = updated
+                .bindings
+                .get(&id.0)
+                .copied()
+                .unwrap_or_else(|| thread_for(&archive.session.working_directory, &workspaces));
             if content_changed {
                 crate::store::write_json(&path, &archive)?;
                 changed += 1;

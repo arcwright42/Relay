@@ -74,6 +74,28 @@ pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 pub struct SessionOptions {
     pub saved_session: Option<String>,
     pub preferences: BTreeMap<String, String>,
+    pub mcp_servers: Vec<StdioMcpServer>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StdioMcpServer {
+    pub name: String,
+    pub command: PathBuf,
+    pub args: Vec<String>,
+}
+
+impl SessionOptions {
+    fn servers(&self) -> Vec<acp::McpServer> {
+        self.mcp_servers
+            .iter()
+            .map(|s| {
+                acp::McpServer::Stdio(
+                    acp::McpServerStdio::new(s.name.clone(), s.command.clone())
+                        .args(s.args.clone()),
+                )
+            })
+            .collect()
+    }
 }
 
 pub struct ConnectionHandle {
@@ -324,7 +346,10 @@ async fn open_session(
     if let Some(saved) = options.saved_session.as_deref().filter(|_| supports_load) {
         match timeout(
             connection
-                .send_request(acp::LoadSessionRequest::new(saved.to_owned(), cwd))
+                .send_request(
+                    acp::LoadSessionRequest::new(saved.to_owned(), cwd)
+                        .mcp_servers(options.servers()),
+                )
                 .block_task(),
             45,
         )
@@ -353,7 +378,7 @@ async fn open_session(
     }
     let response = timeout(
         connection
-            .send_request(acp::NewSessionRequest::new(cwd))
+            .send_request(acp::NewSessionRequest::new(cwd).mcp_servers(options.servers()))
             .block_task(),
         45,
     )

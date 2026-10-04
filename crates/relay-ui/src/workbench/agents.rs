@@ -4,10 +4,10 @@ use gpui_kit::component::popover::Popover;
 
 impl Workbench {
     pub(super) fn needs_connection_notice(&self) -> bool {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         state.status != ConnectionStatus::Ready
             || state.error.is_some()
-            || self.agent_errors[self.selected_project].is_some()
+            || self.agent_errors[self.selected_thread].is_some()
             || state.pending_config.is_some()
     }
 
@@ -20,7 +20,7 @@ impl Workbench {
             <= -self.conversation_scroll.max_offset().y + px(100.);
         self.agent_revision = revision;
         self.agent_states = self
-            .projects
+            .threads
             .iter()
             .map(|p| self.agent_service.snapshot(p.id))
             .collect();
@@ -35,15 +35,15 @@ impl Workbench {
     pub(super) fn agent_action(&mut self, command: AgentCommand, cx: &mut Context<Self>) -> bool {
         let result = self
             .agent_service
-            .dispatch(self.projects[self.selected_project].id, command);
-        self.agent_errors[self.selected_project] = result.as_ref().err().cloned();
+            .dispatch(self.threads[self.selected_thread].id, command);
+        self.agent_errors[self.selected_thread] = result.as_ref().err().cloned();
         self.refresh_agents(cx);
         cx.notify();
         result.is_ok()
     }
 
     pub(super) fn agent_picker(&self, cx: &mut Context<Self>) -> Popover {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let label = state
             .model()
             .map(|model| format!("Codex · {}", model.current_name()))
@@ -75,7 +75,7 @@ impl Workbench {
 
     fn agent_menu(&self, cx: &mut Context<Self>) -> Div {
         let language = self.settings_snapshot.language;
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let ready = state.status == ConnectionStatus::Ready && state.pending_config.is_none();
         let mut configs: Vec<_> = state.configs.iter().collect();
         configs.sort_by_key(|config| config.category.as_deref() != Some("model"));
@@ -259,7 +259,7 @@ impl Workbench {
         self.picker_open = false;
         if self.quick.is_some() {
             cx.emit(super::OpenAgentSettings(
-                self.projects[self.selected_project].id,
+                self.threads[self.selected_thread].id,
             ));
             // Deliver the event before dropping the emitting view/subscription.
             window.defer(cx, |window, _| window.remove_window());
@@ -270,17 +270,17 @@ impl Workbench {
 
     pub fn open_agent_settings(
         &mut self,
-        project: relay_core::ProjectId,
+        thread: relay_core::ThreadId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_project(project, window, cx);
+        self.open_thread(thread, window, cx);
         self.navigate(Page::Agents, window, cx);
         self.agent_action(AgentCommand::DiscoverLocal, cx);
     }
 
     pub(super) fn connect_button(&self, id: &'static str, cx: &mut Context<Self>) -> Button {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let source = state.source.clone();
         Button::new(id)
             .primary()
@@ -293,7 +293,7 @@ impl Workbench {
     }
 
     fn authentication_buttons(&self, cx: &mut Context<Self>) -> Vec<Button> {
-        self.agent_states[self.selected_project]
+        self.agent_states[self.selected_thread]
             .auth_methods
             .iter()
             .enumerate()
@@ -321,12 +321,12 @@ impl Workbench {
     }
 
     pub(super) fn connection_notice(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         column()
             .w_full()
             .gap(px(8.))
             .when_some(
-                self.agent_errors[self.selected_project]
+                self.agent_errors[self.selected_thread]
                     .as_ref()
                     .or(state.error.as_ref()),
                 |view, error| {
@@ -384,7 +384,7 @@ impl Workbench {
 
     pub(super) fn permission_cards(&self, cx: &mut Context<Self>) -> Div {
         column().w_full().gap(px(10.)).children(
-            self.agent_states[self.selected_project]
+            self.agent_states[self.selected_thread]
                 .permissions
                 .iter()
                 .map(|permission| {
@@ -454,7 +454,7 @@ impl Workbench {
     }
 
     pub(super) fn agents(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.agent_states[self.selected_project];
+        let state = &self.agent_states[self.selected_thread];
         let connected = matches!(
             state.status,
             ConnectionStatus::Ready
@@ -477,8 +477,8 @@ impl Workbench {
                 .gap(px(18.))
                 .child(
                     muted(
-                        self.text(Text::ConnectForProject)
-                            .replace("{project}", &self.projects[self.selected_project].name),
+                        self.text(Text::ConnectForThread)
+                            .replace("{thread}", &self.threads[self.selected_thread].name),
                     )
                     .text_size(px(13.)),
                 )
@@ -652,11 +652,11 @@ impl Workbench {
                             )
                         })
                         .child(
-                            Button::new("back-to-project")
+                            Button::new("back-to-thread")
                                 .ghost()
-                                .label(self.text(Text::BackToProject))
+                                .label(self.text(Text::BackToThread))
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.navigate(Page::Project(this.selected_project), window, cx)
+                                    this.navigate(Page::Thread(this.selected_thread), window, cx)
                                 })),
                         ),
                 ),
@@ -664,7 +664,7 @@ impl Workbench {
     }
 
     fn choose_agent_path(&mut self, directory: bool, cx: &mut Context<Self>) {
-        let project = self.projects[self.selected_project].id;
+        let thread = self.threads[self.selected_thread].id;
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
             directories: directory,
@@ -688,8 +688,8 @@ impl Workbench {
                     } else {
                         AgentCommand::Connect(AgentSource::Local(path))
                     };
-                    let result = this.agent_service.dispatch(project, command);
-                    if let Some(index) = this.projects.iter().position(|p| p.id == project) {
+                    let result = this.agent_service.dispatch(thread, command);
+                    if let Some(index) = this.threads.iter().position(|p| p.id == thread) {
                         this.agent_errors[index] = result.err();
                     }
                     this.refresh_agents(cx);

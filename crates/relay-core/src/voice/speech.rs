@@ -19,8 +19,8 @@ pub fn spoken_text(text: &str, language: Language) -> String {
     }
     let text = lines.join("\n");
     let suffix = match language {
-        Language::SimplifiedChinese => "完整内容已显示在项目会话中。",
-        Language::English => "The full response is available in the project conversation.",
+        Language::SimplifiedChinese => "完整内容已显示在对话中。",
+        Language::English => "The full response is available in the thread conversation.",
     };
     if text.is_empty() || text.chars().count() > 3_000 {
         format!("{}\n{suffix}", text.chars().take(3_000).collect::<String>())
@@ -43,6 +43,6 @@ mod tests {
         );
         let spoken = spoken_text(&"字".repeat(10_000), Language::SimplifiedChinese);
         assert!(spoken.chars().count() < 3_100);
-        assert!(spoken.ends_with("项目会话中。"));
+        assert!(spoken.ends_with("对话中。"));
     }
 }

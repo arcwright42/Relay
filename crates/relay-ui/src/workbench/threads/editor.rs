@@ -1,20 +1,20 @@
 use super::super::*;
-use relay_core::{ContextItem, ProjectId, projects::ProjectDraft};
+use relay_core::{ContextItem, ThreadId, threads::ThreadDraft};
 
 pub(in super::super) enum EditorMode {
-    Project(Option<Project>),
+    Thread(Option<Thread>),
     Note {
-        project: Project,
+        thread: Thread,
         item: Option<ContextItem>,
     },
 }
 
-type OnSaved = Box<dyn Fn(ProjectId, &mut Window, &mut App)>;
+type OnSaved = Box<dyn Fn(ThreadId, &mut Window, &mut App)>;
 
-pub(super) struct ProjectEditor {
+pub(super) struct ThreadEditor {
     mode: EditorMode,
     language: Language,
-    service: Arc<dyn ProjectService>,
+    service: Arc<dyn ThreadService>,
     name: Entity<InputState>,
     description: Entity<InputState>,
     body: Entity<TextareaState>,
@@ -24,17 +24,17 @@ pub(super) struct ProjectEditor {
     on_saved: OnSaved,
 }
 
-impl ProjectEditor {
+impl ThreadEditor {
     pub fn new(
         mode: EditorMode,
         language: Language,
-        service: Arc<dyn ProjectService>,
+        service: Arc<dyn ThreadService>,
         on_saved: OnSaved,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let (name, description, body, included) = match &mode {
-            EditorMode::Project(project) => project
+            EditorMode::Thread(thread) => thread
                 .as_ref()
                 .map(|p| {
                     (
@@ -80,8 +80,8 @@ impl ProjectEditor {
 
     pub fn title(&self) -> &'static str {
         self.language.text(match self.mode {
-            EditorMode::Project(None) => Text::NewProject,
-            EditorMode::Project(Some(_)) => Text::EditProject,
+            EditorMode::Thread(None) => Text::NewThread,
+            EditorMode::Thread(Some(_)) => Text::EditThread,
             EditorMode::Note { item: None, .. } => Text::AddNote,
             EditorMode::Note { item: Some(_), .. } => Text::EditNote,
         })
@@ -94,25 +94,25 @@ impl ProjectEditor {
         let name = self.name.read(cx).value().to_string();
         let body = self.body.read(cx).value().to_string();
         let command = match &self.mode {
-            EditorMode::Project(project) => {
-                let draft = ProjectDraft {
+            EditorMode::Thread(thread) => {
+                let draft = ThreadDraft {
                     name,
                     description: self.description.read(cx).value().to_string(),
                     instructions: body,
                 };
-                if let Some(project) = project {
-                    ProjectCommand::Edit {
-                        project: project.id,
-                        expected_revision: project.revision,
+                if let Some(thread) = thread {
+                    ThreadCommand::Edit {
+                        thread: thread.id,
+                        expected_revision: thread.revision,
                         draft,
                     }
                 } else {
-                    ProjectCommand::Create(draft)
+                    ThreadCommand::Create(draft)
                 }
             }
-            EditorMode::Note { project, item } => ProjectCommand::SaveContext {
-                project: project.id,
-                expected_revision: project.revision,
+            EditorMode::Note { thread, item } => ThreadCommand::SaveContext {
+                thread: thread.id,
+                expected_revision: thread.revision,
                 id: item.as_ref().map(|item| item.id),
                 name,
                 content: body,
@@ -144,11 +144,11 @@ impl ProjectEditor {
     }
 }
 
-impl Render for ProjectEditor {
+impl Render for ThreadEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let project = matches!(self.mode, EditorMode::Project(_));
-        let body_label = self.language.text(if project {
-            Text::ProjectInstructions
+        let thread = matches!(self.mode, EditorMode::Thread(_));
+        let body_label = self.language.text(if thread {
+            Text::ThreadInstructions
         } else {
             Text::NoteContent
         });
@@ -157,16 +157,16 @@ impl Render for ProjectEditor {
             .child(muted(self.language.text(Text::Name)).text_size(px(13.)))
             .child(
                 Input::new(&self.name)
-                    .id("project-editor-name")
+                    .id("thread-editor-name")
                     .disabled(self.saving)
                     .aria_label(self.language.text(Text::Name))
                     .context_menu(crate::locale::input_menu),
             )
-            .when(project, |view| {
+            .when(thread, |view| {
                 view.child(muted(self.language.text(Text::Description)).text_size(px(13.)))
                     .child(
                         Input::new(&self.description)
-                            .id("project-editor-description")
+                            .id("thread-editor-description")
                             .disabled(self.saving)
                             .aria_label(self.language.text(Text::Description))
                             .context_menu(crate::locale::input_menu),
@@ -174,7 +174,7 @@ impl Render for ProjectEditor {
             })
             .child(muted(body_label).text_size(px(13.)))
             .child(
-                column().id("project-editor-body").test_support().child(
+                column().id("thread-editor-body").test_support().child(
                     Textarea::new(&self.body)
                         .h(px(200.))
                         .disabled(self.saving)
@@ -183,14 +183,14 @@ impl Render for ProjectEditor {
                 ),
             )
             .child(
-                muted(self.language.text(if project {
+                muted(self.language.text(if thread {
                     Text::InstructionsHint
                 } else {
                     Text::NoteHint
                 }))
                 .text_size(px(13.)),
             )
-            .when(!project, |view| {
+            .when(!thread, |view| {
                 view.child(
                     Button::new("note-included")
                         .outline()
@@ -218,7 +218,7 @@ impl Render for ProjectEditor {
                         .child(
                             div()
                                 .text_color(rgb(0x9a542a))
-                                .child(self.language.text(Text::ProjectSaveError)),
+                                .child(self.language.text(Text::ThreadSaveError)),
                         )
                         .child(muted(error.clone()).text_size(px(13.))),
                 )
@@ -228,14 +228,14 @@ impl Render for ProjectEditor {
                     .justify_end()
                     .gap(px(8.))
                     .child(
-                        Button::new("cancel-project-edit")
+                        Button::new("cancel-thread-edit")
                             .ghost()
                             .label(self.language.text(Text::Cancel))
                             .disabled(self.saving)
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     )
                     .child(
-                        Button::new("save-project-edit")
+                        Button::new("save-thread-edit")
                             .primary()
                             .label(self.language.text(if self.saving {
                                 Text::SavingSettings

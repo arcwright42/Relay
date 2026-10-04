@@ -114,7 +114,7 @@ pub(super) fn metadata(source: &Path, stamp: FileStamp) -> Result<SavedSession> 
         title: id.into(),
         working_directory: cwd.into(),
         source: source.into(),
-        project: None,
+        thread: None,
         updated_at: value["timestamp"].as_str().unwrap_or("").into(),
         message_count: 0,
         available: true,

@@ -6,7 +6,7 @@ use gpui_kit::{
     test::TestWindowExt,
     *,
 };
-use relay_core::{Project, ProjectId, agents::*, capture::*, projects::*, routing::*, settings::*};
+use relay_core::{Thread, ThreadId, agents::*, capture::*, settings::*, threads::*};
 use relay_ui::{ResizeQuick, Workbench};
 use std::sync::{Arc, Mutex};
 
@@ -22,9 +22,9 @@ impl relay_core::sessions::ClientSessionsService for SessionFixtures {
             client: "codex".into(),
             native_id: "local-design-session".into(),
             title: "统一本地会话与薄记忆的技术方案".into(),
-            working_directory: "/Users/example/Projects/Relay".into(),
+            working_directory: "/Users/example/Threads/Relay".into(),
             source: "/Users/example/.codex/sessions/2026/09/30/rollout.jsonl".into(),
-            project: Some(ProjectId(1)),
+            thread: Some(ThreadId(1)),
             updated_at: "2026-09-30T00:00:00Z".into(),
             message_count: 2,
             available: true,
@@ -33,12 +33,12 @@ impl relay_core::sessions::ClientSessionsService for SessionFixtures {
         external.id = ClientSessionId("codex:external-session".into());
         external.native_id = "external-session".into();
         external.title = "在本地 Client 中讨论新项目".into();
-        external.project = None;
+        external.thread = None;
         ClientSessionsSnapshot {
             sessions: vec![session.clone(), external], selected: Some(session.id.clone()), updated_sessions: 2, scanned_files: 2,
             detail: Some(ClientSessionDetail { session, messages: Arc::new(vec![
                 ClientMessage { id: 1, role: MessageRole::User, text: "Relay 不托管 Harness，记忆先保持轻量，外部会话也需要同步。".into() },
-                ClientMessage { id: 2, role: MessageRole::Assistant, text: "使用用户本地 Client，复用原生登录和模型配置。\n\n本地会话按工作目录匹配项目，每 30 分钟同步可见文字。项目记忆由主 Agent 整理和维护。".into() },
+                ClientMessage { id: 2, role: MessageRole::Assistant, text: "使用用户本地 Client，复用原生登录和模型配置。\n\n本地会话只读归档，后台提炼带来源的候选记忆。主 Agent 可以跨会话检索，并按主题查找相关资料。".into() },
             ]) }), ..Default::default()
         }
     }
@@ -52,10 +52,10 @@ impl AgentService for FixtureAgent {
     fn revision(&self) -> u64 {
         self.0.lock().unwrap().messages.len() as u64
     }
-    fn snapshot(&self, _: ProjectId) -> AgentSnapshot {
+    fn snapshot(&self, _: ThreadId) -> AgentSnapshot {
         self.0.lock().unwrap().clone()
     }
-    fn dispatch(&self, _: ProjectId, command: AgentCommand) -> Result<(), String> {
+    fn dispatch(&self, _: ThreadId, command: AgentCommand) -> Result<(), String> {
         if let AgentCommand::Send(prompt) = command {
             let mut state = self.0.lock().unwrap();
             state.messages.extend([
@@ -74,6 +74,8 @@ impl AgentService for FixtureAgent {
                     id: "search".into(),
                     title: "Web search: GPUI Kit".into(),
                     status: "in_progress".into(),
+                    input: String::new(),
+                    output: String::new(),
                 });
             }
         }
@@ -159,16 +161,33 @@ impl SettingsService for Fixtures {
     fn set_language(&self, _: Language) {}
     fn set_voice_wake_enabled(&self, _: bool) {}
 }
-impl ProjectService for Fixtures {
-    fn snapshot(&self) -> ProjectCatalog {
-        ProjectCatalog {
+impl ThreadService for Fixtures {
+    fn activity(&self) -> Vec<TaskActivity> {
+        vec![
+            TaskActivity {
+                thread: ThreadId(2),
+                name: "实现原生记忆机制".into(),
+                state: "review".into(),
+                summary: "已完成事件采集、来源追溯与历史会话主题归类，等待检查。".into(),
+            },
+            TaskActivity {
+                thread: ThreadId(1),
+                name: "整理产品方案".into(),
+                state: "waiting".into(),
+                summary: "需要确认产物保存位置。打开任务继续处理。".into(),
+            },
+        ]
+    }
+
+    fn snapshot(&self) -> ThreadCatalog {
+        ThreadCatalog {
             revision: 1,
             error: None,
-            projects: ["Product Design", "Agent Infra", "Personal"]
+            threads: ["Relay", "产品方案", "记忆机制实现", "每周报告"]
                 .into_iter()
                 .enumerate()
-                .map(|(index, name)| Project {
-                    id: ProjectId(index as u64 + 1),
+                .map(|(index, name)| Thread {
+                    id: ThreadId(index as u64),
                     revision: 1,
                     name: name.into(),
                     description: String::new(),
@@ -179,24 +198,11 @@ impl ProjectService for Fixtures {
                 .collect(),
         }
     }
-    fn apply(&self, _: ProjectCommand) -> Result<ProjectId, String> {
+    fn apply(&self, _: ThreadCommand) -> Result<ThreadId, String> {
         Err("fixture".into())
     }
 }
-impl RoutingService for Fixtures {
-    fn snapshot(&self) -> RoutingSnapshot {
-        RoutingSnapshot::default()
-    }
-    fn save_key(&self, _: RoutingProvider, _: String) -> Result<(), RoutingError> {
-        Err(RoutingError::NotConfigured)
-    }
-    fn remove_key(&self) -> Result<(), RoutingError> {
-        Ok(())
-    }
-    fn decide(&self, _: &str) -> Result<RouteDecision, RoutingError> {
-        Err(RoutingError::NotConfigured)
-    }
-}
+
 impl WebFetchService for Fixtures {
     fn fetch(&self, _: &str) -> Result<String, String> {
         Err("fixture".into())
@@ -231,7 +237,7 @@ fn main() -> gpui_kit::Result<()> {
             Theme::change(ThemeMode::Light, None, cx);
         });
         let error = (status == ConnectionStatus::Failed)
-            .then(|| "示例：无法读取项目对话文件，请检查日志中的具体原因。".into());
+            .then(|| "示例：无法读取对话文件，请检查日志中的具体原因。".into());
         let agents = Arc::new(FixtureAgent(
             Mutex::new(AgentSnapshot {
                 status,
@@ -242,7 +248,7 @@ fn main() -> gpui_kit::Result<()> {
         ));
         let handle = cx.open_window(size(px(640.),px(54.)), |window,cx| {
             let view = cx.new(|cx| {
-                let mut view = Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), Arc::new(Fixtures), window,cx);
+                let mut view = Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), window,cx);
                 view.capture(Selection { text:"GPUI Kit is a comprehensive Rust desktop application framework. It combines a production-ready UI system with application-grade data, layout, and editing capabilities.".into(), ..Default::default() }, Arc::new(Fixtures),window,cx);
                 view
             });
@@ -314,14 +320,8 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
         ));
         let handle = cx.open_window(size(px(width), px(height)), |window, cx| {
             let view = cx.new(|cx| {
-                let mut view = Workbench::new(
-                    agents,
-                    Arc::new(Fixtures),
-                    Arc::new(Fixtures),
-                    Arc::new(Fixtures),
-                    window,
-                    cx,
-                );
+                let mut view =
+                    Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), window, cx);
                 view.set_client_session_service(Arc::new(SessionFixtures), cx);
                 view.set_file_service(Arc::new(FileFixtures), cx);
                 view
@@ -330,7 +330,8 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
         })?;
         for (page, target) in [
             ("home", ElementId::from("home")),
-            ("project", ElementId::from(("project", 0_usize))),
+            ("thread", ElementId::from(("thread", 1_usize))),
+            ("activity", ElementId::from("inbox")),
             ("agents", ElementId::from("agents")),
             ("client-sessions", ElementId::from("client-sessions")),
             ("files", ElementId::from("files-tab")),
@@ -346,10 +347,10 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
                 assert!(window.find("home").visible());
                 assert!(window.find("settings").visible());
                 if page == "home" {
-                    assert!(window.find("route-prompt").visible());
-                    assert!(window.find(("home-project", 2_usize)).visible());
-                    assert!(window.try_find("project-members").is_none());
-                } else if page == "project" {
+                    assert!(window.find("send").visible());
+                    assert!(window.try_find("route-prompt").is_none());
+                    assert!(window.try_find("thread-members").is_none());
+                } else if page == "thread" {
                     assert!(window.find("send").visible());
                     assert!(window.find("composer-context").visible());
                 }
