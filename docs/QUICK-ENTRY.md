@@ -140,3 +140,28 @@ AX 为空后补充针对原应用的 Cmd-C 取词回退，等待修饰键释放�
 防止构建再次退回临时签名：`bundle` 在覆盖旧包之前选择身份，依次使用显式环境配置、本机 `.relay-signing-identity`、已有包的签名证书。仅无配置的新环境使用 ad-hoc；无效配置或签名错误直接失败。新增 `cargo xtask start`，通过 Launch Services 启动并保留仓库 `.env` 的读取路径，不在命令行传递密钥。旧实例仍被复用，切换新构建需先退出再启动。
 
 验证：`cargo xtask verify` 的包边界、格式、全目标/全 feature Clippy 和 104 项测试通过。移开本机签名配置、取消签名环境变量后重新打包，确实沿用已有包证书；新二进制 CDHash 变化，但 TeamIdentifier 与 designated requirement 不变。通过 `cargo xtask start` 启动新构建，Relay 自身仍为 `trusted=true`，工作目录恢复到仓库，未重新授权。用户已确认恢复后的 Chrome 选中文字正常显示。
+
+## 本地语音唤醒（2026-10-02）
+
+设置中开启「语音唤醒」后，麦克风通过本地 sherpa-onnx 关键词检测识别「嘿 relay / Hey Relay」，打开独立语音浮层并持续接收后续讲话。首次请求系统麦克风权限；拒绝、设备不可用和资源损坏都有独立状态与重试入口。开关默认关闭并保存到应用偏好，关闭工作台仍监听，关闭开关或退出 Relay 释放采音。
+
+语音会话中暂停关键词检测。Silero VAD 检出人声并等连续约 0.8 秒静音后，将完整语句交给 ASR → Prompt → Jev → 项目 Agent session → TTS。处理和朗读时暂停收音，播放结束等待 300 ms 后自动听下一句；点击「取消并重新说话」取消本轮，点击「结束」、按 Esc 或关闭浮层恢复等待唤醒。超出 60 秒的整句不执行，提示手动重说。Jev 不确定时选择项目；Agent 认证或工具授权使用现有项目界面。
+
+浮层显示输入设备、音量、处理阶段、当前请求、回复和目标项目。设置提供「开始语音会话」手动入口，快捷面板维持独立链路。千问 ASR/TTS 共用独立语音密钥，未配置时显示「语音识别服务待配置」并及时释放音频；Jev 需要单独配置。云端适配和流式播放已接入，自动化协议测试不代表真实服务或真人唤醒验收。Relay 必须保持运行且 Mac 未进入睡眠。
+
+领域接口、轮次与项目执行、平台音频和窗口动作分别归属 core、runtime、platform 和入口。引擎静态链接，约 5.2 MiB KWS 模型、约 629 KiB VAD 模型、关键词及许可证随应用交付，无需独立部署。xtask 固定来源、版本、SHA-256，运行时重新校验。详见 [包治理](PACKAGES.md#语音唤醒领域)。
+
+等待唤醒使用有界采音队列、默认输入设备检查、45 秒 KWS 流重建及重叠缓冲；低能量静音持续一秒后暂停 KWS 推理，保留半秒前置缓冲。音频只留在内存。重复唤醒有 3 秒冷却；取消、重试或关闭后，旧音频和迟到结果不能进入新轮次。每个语音任务绑定派发时返回的 assistant message ID，避免朗读其他轮次或取消其他窗口的新任务。
+
+验证覆盖真实 Silero 中英文短语端点、长静音与背景噪声、ASR → 路由 → 回复 → 播放的顺序、选择项目、取消及旧结果隔离、朗读防回声、忙碌 Agent、目录版本变化、授权停等，以及中英文浮层操作和长文本布局。ASR 与 Agent 流程测试使用受控替身，不代表真实服务端到端通过。实际 Rust 检测器通过 macOS 合成的中英文正例，四条对照语句未触发；30、44、90 秒静音及低幅白噪声前置样本用于检查持续监听。样本验证不代表真人、口音、远场和日常环境的误唤醒/漏唤醒率；此前真人试用仍未唤醒，需结合真实麦克风音量继续校准。开发者可用 `relay-platform` 的 `wake_probe` example 对 PCM WAV 做相同增量检测，不申请麦克风权限。
+
+
+### 千问 ASR/TTS 接入验证
+
+2026-10-03：使用千问统一 WebSocket 地址完成真实服务验证。仓库的合成中文 WAV 转写为「请帮我打开浏览器。」，固定测试回复通过 `qwen-audio-3.1-tts-flash` 返回 PCM，并由 macOS 输出设备完成播放。API key 通过已签名应用的 stdin 命令保存到独立 Keychain 条目，没有写入仓库或日志。
+
+本轮 `cargo xtask verify` 的包边界、格式、Clippy 与 161 项测试通过；覆盖真实 WebSocket 帧顺序、ASR 终态去重、未完成任务断连、TTS 跨帧 PCM 解码、反压、取消和错误脱敏。新版应用已重新打包并经 Launch Services 启动，日志确认麦克风正在监听。首次桌面自动化读取应用两次超时；补齐 Jev 并重启后已正常读取设置界面，确认 OpenRouter 显示「已保存 API 密钥」，语音显示「正在监听“嘿 relay”」。当时尚未配置 Jev 路由密钥；后续真实链路验证见下一段。真人麦克风唤醒仍未完成验收。
+
+协议来源：[千问 WebSocket 接入概览](https://platform.qianwenai.com/docs/api-reference/realtime-api/websocket-overview)、[ASR 事件](https://help.aliyun.com/zh/model-studio/qwen-asr-message-client-events)、[TTS 事件](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-client-events)、[TTS 音色](https://help.aliyun.com/zh/model-studio/qwen-audio-tts-voice-list)。
+
+同日补齐 Jev OpenRouter Keychain 配置后，`--voice-roundtrip-check` 在临时项目中通过真实「千问 ASR → Jev → 本机项目 Agent → 千问 TTS 播放」，Agent 返回「语音链路测试成功」且未使用工具。包边界、格式、Clippy、161 项测试再次通过；当前工作树应用已重启加载已保存凭据。正式项目未写入测试消息，真人唤醒仍需实机试用。

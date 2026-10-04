@@ -1,6 +1,6 @@
 [package]
 name = "relay-platform"
-description = "macOS global shortcut and accessibility capture boundary"
+description = "macOS desktop, microphone, and local wake detection boundary"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,11 @@ block2.workspace = true
 objc2.workspace = true
 objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cpal.workspace = true
+objc2-av-foundation.workspace = true
+sherpa-onnx.workspace = true
 
 # Native FFI is confined to this package; all other packages forbid unsafe code.
 [lints.rust]

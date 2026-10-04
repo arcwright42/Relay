@@ -6,10 +6,12 @@ mod devtools;
 mod i18n;
 mod locale;
 mod preview;
+mod voice;
 mod workbench;
+pub use voice::{EndVoiceSession, VoicePanel};
 
 pub use locale::{OpenQuick, OpenWorkspace, Quit, apply_language};
 pub use workbench::{
-    FocusSearch, OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick, SaveFile,
-    SendMessage, Workbench,
+    FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenProject, RequestAccessibility,
+    ResizeQuick, SaveFile, SendMessage, Workbench,
 };

@@ -180,7 +180,46 @@ copy! {
     HomePrompt => ("What’s on your mind?", "有什么想法？"),
     Language => ("Language", "语言"),
     SavingSettings => ("Saving…", "正在保存…"),
-    SettingsError => ("This language applies for now, but could not be saved. Check the settings file and try again.", "语言已在本次使用中生效，但未能保存。请检查设置文件后重试。"),
+    SettingsError => ("These preferences apply for now, but could not be saved. Check the settings file and try again.", "设置已在本次使用中生效，但未能保存。请检查设置文件后重试。"),
+    VoiceWake => ("Voice wake", "语音唤醒"),
+    VoiceWakeDetail => ("Say “Hey Relay”, speak, then pause to send. Replies are read aloud. Listening continues in the background and with windows closed; quitting Relay stops it.", "说“嘿 relay”后开始说话，停顿后自动发送并朗读回复。切到后台或关闭窗口后仍会监听，退出 Relay 后停止。"),
+    EnableVoiceWake => ("Enable", "开启"),
+    DisableVoiceWake => ("Disable", "关闭"),
+    VoiceWakeOff => ("Microphone listening is off.", "麦克风监听已关闭。"),
+    VoiceWakeStarting => ("Starting voice wake…", "正在启动语音唤醒…"),
+    VoiceWakePermission => ("Waiting for microphone permission…", "等待麦克风授权…"),
+    VoiceWakeListening => ("Listening for “Hey Relay”.", "正在监听“嘿 relay”。"),
+    VoiceSessionListening => ("I'm listening", "正在听你说话"),
+    VoiceContinue => ("Pause briefly to send. Listening resumes after the reply.", "说完后稍作停顿即可发送，回复结束后自动继续听。"),
+    VoiceAsrNotConfigured => ("Speech recognition is awaiting configuration.", "语音识别服务待配置。"),
+    VoiceTranscribing => ("Transcribing your request…", "正在转写你的请求…"),
+    VoiceTranscriptionFailed => ("Speech recognition failed. Listening continues.", "语音转写暂时失败，监听仍在继续。"),
+    VoiceRouting => ("Choosing a project…", "正在选择项目…"),
+    VoiceChoosingProject => ("Choose where to send this request", "请选择要发送到的项目"),
+    VoiceConnecting => ("Connecting to the project agent…", "正在连接项目 Agent…"),
+    VoiceWaiting => ("Waiting for the project agent…", "正在等待项目 Agent 回复…"),
+    VoiceNeedsAttention => ("Review the agent's request in the project conversation.", "请在项目会话中确认 Agent 的请求。"),
+    VoiceSpeaking => ("Reading the reply…", "正在朗读回复…"),
+    VoiceProcessingDetail => ("Listening resumes after this turn. You can cancel and speak again.", "本轮结束后继续收音，也可以取消后重新说话。"),
+    VoiceRequestFailed => ("This request could not finish", "本次请求未完成"),
+    VoiceAgentBusy => ("This project already has a running task. Try again when it finishes.", "该项目已有任务正在运行，请完成后重试。"),
+    VoiceAgentAuthentication => ("Sign in to the agent in the project conversation, then try again.", "请在项目会话中登录 Agent 后重试。"),
+    VoiceAgentFailed => ("The project agent could not finish. Check the project conversation.", "项目 Agent 未能完成请求，请查看项目会话。"),
+    VoiceSpeechFailed => ("The reply could not be read aloud. You can read it below.", "回复朗读失败，可以查看下方文字。"),
+    VoiceInputTooLong => ("Keep each request under one minute. Resume to try again.", "单次请求请控制在一分钟内，点击继续说话后重试。"),
+    VoiceQueueFull => ("The previous request is still stopping. Please try again.", "上一条请求仍在停止，请稍后重试。"),
+    VoiceResume => ("Cancel and speak again", "取消并重新说话"),
+    VoiceListenAgain => ("Resume listening", "继续说话"),
+    VoiceOpenProject => ("Open project conversation", "打开项目会话"),
+    VoiceYourRequest => ("Your request", "你的请求"),
+    VoiceReply => ("Relay's reply", "Relay 的回复"),
+    EndVoiceSession => ("End session", "结束会话"),
+    StartVoiceSession => ("Start voice session", "开始语音会话"),
+    VoiceWakeDenied => ("Allow Relay to use the microphone in System Settings, then try again.", "请在系统设置中允许 Relay 使用麦克风，然后重试。"),
+    VoiceWakeMicrophoneError => ("The microphone is unavailable. Check your audio input and try again.", "麦克风不可用。请检查音频输入设备后重试。"),
+    VoiceWakeResourcesError => ("Voice resources are missing or damaged. Reinstall Relay and try again.", "语音资源缺失或损坏。请重新安装 Relay 后重试。"),
+    VoiceWakeDetectionError => ("Voice wake stopped. Try again to restart listening.", "语音唤醒已停止。请重试以恢复监听。"),
+    OpenMicrophoneSettings => ("Microphone settings", "麦克风设置"),
     Retry => ("Try again", "重试"),
     Appearance => ("Appearance", "外观"),
     Light => ("Light", "浅色"),
@@ -399,6 +438,25 @@ pub(crate) fn choice_name<'a>(
         &choice.name
     } else {
         agent_text(language, &choice.name)
+    }
+}
+
+pub(crate) fn routing_error_text(error: relay_core::routing::RoutingError) -> Text {
+    use relay_core::routing::RoutingError;
+    match error {
+        RoutingError::NotConfigured => Text::RoutingMissingKey,
+        RoutingError::InvalidKey => Text::RoutingInvalidKey,
+        RoutingError::ConfigurationFile => Text::RoutingConfigurationFileError,
+        RoutingError::ExternallyConfigured => Text::RoutingExternalCredential,
+        RoutingError::Keychain => Text::RoutingKeychainError,
+        RoutingError::Unauthorized => Text::RoutingUnauthorized,
+        RoutingError::RateLimited => Text::RoutingRateLimited,
+        RoutingError::QuotaExceeded => Text::RoutingQuotaExceeded,
+        RoutingError::Unavailable => Text::RoutingUnavailable,
+        RoutingError::InvalidResponse => Text::RoutingInvalidResponse,
+        RoutingError::InputTooLarge => Text::RoutingInputTooLarge,
+        RoutingError::CatalogUnavailable => Text::RoutingCatalogUnavailable,
+        RoutingError::CatalogChanged => Text::RoutingCatalogChanged,
     }
 }
 

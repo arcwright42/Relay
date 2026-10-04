@@ -8,6 +8,7 @@ pub mod projects;
 pub mod routing;
 pub mod sessions;
 pub mod settings;
+pub mod voice;
 
 pub use projects::{
     ContextId, ContextItem, MemoryId, MemoryItem, MemoryKind, MemorySource, Project,

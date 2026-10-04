@@ -1,5 +1,6 @@
 use serde_json::Value;
 use std::{error::Error, fs, path::Path, process::Command};
+mod voice;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -11,7 +12,10 @@ fn main() -> Result<()> {
         Some("verify") => {
             check_packages()?;
             run("cargo", &["fmt", "--all", "--", "--check"])?;
-            run(
+            let target = target_directory()?;
+            let native = voice::prepare_engine(&target)?;
+            voice::prepare_model(&target)?;
+            run_with_voice(
                 "cargo",
                 &[
                     "clippy",
@@ -23,17 +27,32 @@ fn main() -> Result<()> {
                     "-D",
                     "warnings",
                 ],
+                &native,
             )?;
-            run(
+            run_with_voice(
                 "cargo",
                 &["test", "--workspace", "--all-features", "--locked"],
+                &native,
             )
         }
         Some("icon") => build_icon(root),
+        Some("prepare-voice") => {
+            let target = target_directory()?;
+            let native = voice::prepare_engine(&target)?;
+            let model = voice::prepare_model(&target)?;
+            println!(
+                "Voice native libraries: {}\nVoice model resources: {}",
+                native.display(),
+                model.display()
+            );
+            Ok(())
+        }
         Some("bundle") => bundle(root, std::env::args().any(|arg| arg == "--release")),
         Some("start") => start(root),
         _ => {
-            println!("cargo xtask <check-packages | verify | icon | bundle [--release] | start>");
+            println!(
+                "cargo xtask <check-packages | verify | prepare-voice | icon | bundle [--release] | start>"
+            );
             Ok(())
         }
     }
@@ -56,6 +75,27 @@ fn metadata() -> Result<Value> {
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+fn target_directory() -> Result<std::path::PathBuf> {
+    Ok(metadata()?["target_directory"]
+        .as_str()
+        .ok_or("Missing target directory")?
+        .into())
+}
+
+fn run_with_voice(program: &str, args: &[&str], native: &Path) -> Result<()> {
+    let resources = target_directory()?.join("relay-resources/voice");
+    if !Command::new(program)
+        .args(args)
+        .env("SHERPA_ONNX_LIB_DIR", native)
+        .env("RELAY_TEST_VOICE_RESOURCES", resources)
+        .status()?
+        .success()
+    {
+        return Err(format!("{program} {} failed", args.join(" ")).into());
+    }
+    Ok(())
+}
+
 fn validate_package(package: &Value) -> Result<()> {
     let name = package["name"].as_str().ok_or("Missing package name")?;
     let allowed: &[&str] = match name {
@@ -75,6 +115,9 @@ fn validate_package(package: &Value) -> Result<()> {
             "objc2",
             "objc2-app-kit",
             "objc2-foundation",
+            "objc2-av-foundation",
+            "cpal",
+            "sherpa-onnx",
         ],
         "relay-runtime" => &[
             "anyhow",
@@ -86,6 +129,10 @@ fn validate_package(package: &Value) -> Result<()> {
             "sha2",
             "ureq",
             "security-framework",
+            "futures-util",
+            "tokio",
+            "tokio-tungstenite",
+            "uuid",
         ],
         "relay-acp" => &[
             "agent-client-protocol",
@@ -95,7 +142,7 @@ fn validate_package(package: &Value) -> Result<()> {
             "relay-core",
             "serde_json",
         ],
-        "xtask" => &["serde_json"],
+        "xtask" => &["serde_json", "sha2"],
         _ => {
             return Err(format!(
                 "{name}: define its layer in docs/PACKAGES.md and xtask before adding a package"
@@ -137,7 +184,9 @@ fn validate_package(package: &Value) -> Result<()> {
 }
 
 fn check_packages() -> Result<()> {
+    voice::check()?;
     let metadata = metadata()?;
+    voice::check_sdk(&metadata)?;
     for package in metadata["packages"].as_array().ok_or("Missing packages")? {
         validate_package(package)?;
         println!(
@@ -154,6 +203,7 @@ fn check_packages() -> Result<()> {
         ))?,
     )?;
     println!("Codex ACP adapter: package versions and integrity lock OK");
+    println!("Voice wake: SDK, native archives, model and keyword integrity lock OK");
     Ok(())
 }
 
@@ -383,14 +433,17 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
     let signing_identity = bundle_signing_identity(root, &app)?;
     if signing_identity == "-" {
         eprintln!(
-            "Warning: ad-hoc signing can invalidate Accessibility permission after a rebuild. Configure RELAY_SIGNING_IDENTITY or .relay-signing-identity for a stable identity."
+            "Warning: ad-hoc signing can invalidate macOS privacy permissions after a rebuild. Configure RELAY_SIGNING_IDENTITY or .relay-signing-identity for a stable identity."
         );
     }
     let mut args = vec!["build", "--package", "relay", "--locked"];
     if release {
         args.push("--release");
     }
-    run("cargo", &args)?;
+    let target = target_directory()?;
+    let native = voice::prepare_engine(&target)?;
+    let model = voice::prepare_model(&target)?;
+    run_with_voice("cargo", &args, &native)?;
     let metadata = metadata()?;
     let target = Path::new(
         metadata["target_directory"]
@@ -400,6 +453,7 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
     let contents = app.join("Contents");
     fs::create_dir_all(contents.join("MacOS"))?;
     fs::create_dir_all(contents.join("Resources"))?;
+    voice::bundle_resources(&model, &native, &contents.join("Resources/voice"))?;
     // Replace the executable atomically so an open development app can finish its
     // current conversation using the old inode while the next launch uses this build.
     let pending_executable = contents.join(format!("MacOS/.relay-next-{}", std::process::id()));
@@ -434,6 +488,7 @@ fn bundle(root: &Path, release: bool) -> Result<()> {
 <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSMicrophoneUsageDescription</key><string>Relay 使用麦克风在本机识别“嘿 relay”，并在唤醒后持续接收你的讲话。配置语音识别服务后，会将会话音频发送给该服务转写。</string>
 </dict></plist>
 "#,
             version = env!("CARGO_PKG_VERSION")
