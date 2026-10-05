@@ -1,5 +1,5 @@
 use super::dialogue::ThreadVoiceDialogue;
-use crate::{installer, native::NativeStore};
+use crate::{installer, resident::ResidentStore};
 use relay_core::{ThreadId, agents::*, voice::*};
 use std::sync::{
     Arc, Mutex,
@@ -54,14 +54,14 @@ fn message(id: u64, text: &str, status: MessageStatus) -> ChatMessage {
 }
 struct Fixture {
     root: std::path::PathBuf,
-    threads: Arc<NativeStore>,
+    threads: Arc<ResidentStore>,
     agents: Arc<Agents>,
 }
 impl Fixture {
     fn new() -> Self {
         let root =
             std::env::temp_dir().join(format!("relay-voice-main-{}", installer::unique_id()));
-        let threads = Arc::new(NativeStore::open(root.clone()).unwrap());
+        let threads = Arc::new(ResidentStore::open(root.clone()).unwrap());
         Self {
             root,
             threads,

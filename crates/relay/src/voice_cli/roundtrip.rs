@@ -46,7 +46,8 @@ pub(super) fn check(credential_root: &Path, wav: Vec<u8>) -> Result<(), String> 
     std::os::unix::fs::symlink(components, sandbox.0.join("components"))
         .map_err(|_| "Could not reuse the installed Agent adapter.")?;
     let threads = Arc::new(
-        relay_runtime::native::NativeStore::open(sandbox.0.clone()).map_err(|e| e.to_string())?,
+        relay_runtime::resident::ResidentStore::open(sandbox.0.clone())
+            .map_err(|e| e.to_string())?,
     );
     let thread = threads
         .snapshot()

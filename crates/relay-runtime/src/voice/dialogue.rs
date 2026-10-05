@@ -101,7 +101,7 @@ impl VoicePromptService for ThreadVoiceDialogue {
         progress: &dyn Fn(VoicePromptProgress),
     ) -> Result<VoicePromptResult, VoiceTurnError> {
         check_cancelled(cancelled)?;
-        let thread = crate::native::MAIN;
+        let thread = crate::resident::MAIN;
         let definition = self
             .threads
             .thread(thread)

@@ -15,41 +15,6 @@ use std::sync::{Arc, Mutex};
 mod memory_fixture;
 use memory_fixture::MemoryFixtures;
 
-struct SessionFixtures;
-impl relay_core::sessions::ClientSessionsService for SessionFixtures {
-    fn revision(&self) -> u64 {
-        1
-    }
-    fn snapshot(&self) -> relay_core::sessions::ClientSessionsSnapshot {
-        use relay_core::sessions::*;
-        let session = ClientSession {
-            id: ClientSessionId("codex:local-design-session".into()),
-            client: "codex".into(),
-            native_id: "local-design-session".into(),
-            title: "统一本地会话与薄记忆的技术方案".into(),
-            working_directory: "/Users/example/Threads/Relay".into(),
-            source: "/Users/example/.codex/sessions/2026/09/30/rollout.jsonl".into(),
-            updated_at: "2026-09-30T00:00:00Z".into(),
-            message_count: 2,
-            available: true,
-        };
-        let mut external = session.clone();
-        external.id = ClientSessionId("codex:external-session".into());
-        external.native_id = "external-session".into();
-        external.title = "在本地 Client 中讨论新项目".into();
-        ClientSessionsSnapshot {
-            sessions: vec![session.clone(), external], selected: Some(session.id.clone()), updated_sessions: 2, scanned_files: 2,
-            detail: Some(ClientSessionDetail { session, messages: Arc::new(vec![
-                ClientMessage { id: 1, role: MessageRole::User, text: "Relay 不托管 Harness，记忆先保持轻量，外部会话也需要同步。".into() },
-                ClientMessage { id: 2, role: MessageRole::Assistant, text: "使用用户本地 Client，复用原生登录和模型配置。\n\n本地会话只读归档，后台提炼带来源的候选记忆。主 Agent 可以跨会话检索，并按主题查找相关资料。".into() },
-            ]) }), ..Default::default()
-        }
-    }
-    fn dispatch(&self, _: relay_core::sessions::ClientSessionsCommand) -> Result<(), String> {
-        Ok(())
-    }
-}
-
 struct FixtureAgent(Mutex<AgentSnapshot>, bool);
 impl AgentService for FixtureAgent {
     fn revision(&self) -> u64 {
@@ -338,13 +303,12 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
             let view = cx.new(|cx| {
                 let mut view =
                     Workbench::new(agents, Arc::new(Fixtures), Arc::new(Fixtures), window, cx);
-                view.set_memory_services(
+                view.set_memory_service(
                     Arc::new(if pending {
                         MemoryFixtures::pending()
                     } else {
                         MemoryFixtures::default()
                     }),
-                    Arc::new(SessionFixtures),
                     cx,
                 );
                 view.set_file_service(Arc::new(FileFixtures), cx);
@@ -389,11 +353,6 @@ fn render_workspace(folder: &std::path::Path) -> gpui_kit::Result<()> {
                     ("detail", ElementId::from(("memory-entry", 1_u64))),
                     ("forget", ElementId::from("memory-forget")),
                     ("cancel-forget", ElementId::from("cancel-forget-memory")),
-                    ("edit", ElementId::from("memory-edit")),
-                    ("cancel-edit", ElementId::from("memory-cancel-edit")),
-                    ("source", ElementId::from(("memory-evidence", 10_u64))),
-                    ("archive", ElementId::from("memory-open-archive")),
-                    ("topics", ElementId::from("memory-topics-tab")),
                 ] {
                     cx.update_window(handle.into(), |_, window, cx| {
                         window.render_frame(cx);

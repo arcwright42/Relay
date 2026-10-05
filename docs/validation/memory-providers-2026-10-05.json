@@ -1,0 +1,135 @@
+{
+  "version": 2,
+  "date": "2026-10-05",
+  "branch": "feat/memory-provider-claude-mem",
+  "upstream": {
+    "repository": "https://github.com/thedotmack/claude-mem",
+    "commit": "c8f544556c59f74dd7a6737f47b54b395ab087c0",
+    "version": "13.31.0",
+    "license": "Apache-2.0"
+  },
+  "workspace": {
+    "command": "cargo xtask verify",
+    "package_boundaries": "passed",
+    "fmt": "passed",
+    "clippy_all_targets_all_features": "passed",
+    "passed": 169,
+    "failed": 0,
+    "ignored": 2,
+    "ignored_note": "The two external Worker tests were run explicitly below. Retired Native engine tests were removed; task/session regressions were retained and upgrade/offline regressions added."
+  },
+  "build": {
+    "command": "cargo build -p relay --locked",
+    "result": "passed",
+    "desktop_app_restarted": false
+  },
+  "real_worker": {
+    "tests_passed": 2,
+    "tests": [
+      "real_worker_manual_memory_roundtrip",
+      "real_worker_extracts_observations_and_summary_from_relay_lifecycle"
+    ],
+    "duration_seconds": 38.49,
+    "isolation": "Temporary Worker data and Relay data directories; synthetic conversation only",
+    "extraction_backend": "Upstream CodexProvider using existing local CLI subscription authentication",
+    "embedding_function": "Chroma default; retired Relay Alibaba configuration was not read or migrated",
+    "lifecycle_output": {
+      "observations": 2,
+      "session_summaries": 1
+    },
+    "context_verified": true,
+    "upstream_work_state_directives_excluded": true,
+    "manual_save_list_detail_search_timeline_delete": "passed",
+    "test_worker_stopped_after_validation": true
+  },
+  "chroma_deep_probe": {
+    "status": "healthy",
+    "connected": true,
+    "timestamp": "2026-10-05T10:03:32.315Z",
+    "details": "chroma-mcp semantic search round-trip succeeded",
+    "deep": true,
+    "probe": {
+      "ok": true,
+      "stage": "done",
+      "queryLatencyMs": 60
+    }
+  },
+  "semantic_query_sample": {
+    "query": "durable database journal to survive sudden process termination",
+    "project": "relay-lifecycle-9916b845-d0be-4fb1-8bc7-c59761ae73c3",
+    "results": [
+      {
+        "id": 14,
+        "title": "Durable queue crash recovery remains unverified"
+      },
+      {
+        "id": 13,
+        "title": "Enabled WAL for the durable queue"
+      }
+    ],
+    "totalResults": 2
+  },
+  "binary_cli_mcp": {
+    "new_binary": true,
+    "default_provider": "claude-mem",
+    "upstream_default_port_discovery": true,
+    "worker_settings_discovery": true,
+    "explicit_url_recovers_invalid_external_settings": true,
+    "worker_reachable": true,
+    "native_selection_rejected": true,
+    "native_embedding_command_rejected": true,
+    "memory_factory_independent_of_resident_store": true,
+    "main_tools": 13,
+    "task_tools": 8,
+    "coordinator_task_creation": true,
+    "recursive_task_creation_rejected": true,
+    "unsupported_confirmation_rejected": true,
+    "wrong_fingerprint_rejected": true,
+    "fresh_database_has_no_native_memory_tables": true,
+    "resident_schema": 3,
+    "production_data_used": false,
+    "effective_namespace_fingerprint_accepted": true,
+    "config_only_fingerprint_rejected": true
+  },
+  "coverage": [
+    "durable ordering and stable event identities",
+    "context policy changes preserve pending queue",
+    "unreachable Worker retains capture while the Agent turn continues",
+    "uncertain POST blocks only its session until explicit resolution",
+    "cross-process lock and crashed sending recovery",
+    "scope checks including upstream missing platform metadata",
+    "MCP task creation, restricted task inventory, provider fingerprint protection",
+    "UI query races, retry, cancel deletion and confirm observation deletion",
+    "future/invalid config and database preservation",
+    "legacy schema v1/v2 task and message ID upgrade with old memory content preserved",
+    "fresh database does not create Native memory tables or observer thread",
+    "legacy project import preserves original files without memory re-extraction",
+    "Native config migration disables history import; old Claude-Mem queue survives v1 config upgrade",
+    "owned/retired observer archive exclusion",
+    "task completion/report correlation, cancellation races and crash recovery",
+    "effective implicit namespace participates in provider identity; moving the data directory invalidates old execution checkpoints"
+  ],
+  "limits": [
+    "The new code and binary were validated; the running desktop app was not restarted and production data was not used.",
+    "Worker installation/startup and its extraction/embedding configuration remain external to Relay.",
+    "Native confirmation, revision, source-cascade deletion and extraction controls were removed; they are not emulated.",
+    "Old memory data and Keychain entries are retained but are not migrated into Claude-Mem.",
+    "No claim of exactly-once Worker writes; uncertain POST outcomes require operator resolution.",
+    "The transcript and delivery journal are separate stores; a crash between their writes can leave an uncaptured event. Historical scan repair requires opt-in import.",
+    "Synthetic English checks are not Chinese recall or long-term memory-quality evaluation."
+  ],
+  "scope": "Retire Relay Native memory; Claude-Mem is the sole provider; retain provider abstraction and separate resident task/session storage.",
+  "ui": {
+    "render_command": "cargo run -p relay-ui --example quick_preview --locked -- <temporary-output> --workspace --memory-only",
+    "fixtures_only": true,
+    "rendered": [
+      "wide overview/detail/delete confirmation",
+      "compact overview/detail/delete confirmation"
+    ],
+    "visually_inspected": [
+      "compact detail",
+      "wide delete confirmation"
+    ],
+    "retired_controls_absent": true
+  }
+}

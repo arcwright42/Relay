@@ -1,4 +1,4 @@
-use super::{Detail, MemoryView};
+use super::MemoryView;
 use gpui_kit::{
     AppContext, Context, Entity, IntoElement, Render, Styled, TestAppContext, Window,
     component::Root, div, prelude::ParentElement, test::TestWindowExt,
@@ -17,6 +17,55 @@ impl Render for MemoryHarness {
             .child(self.0.clone())
             .children(Root::render_dialog_layer(window, cx))
     }
+}
+
+#[gpui_kit::test]
+fn memory_ui_offers_only_provider_operations(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        cx.set_reduce_motion(true);
+    });
+    let service = Arc::new(MemoryFixtures::default());
+    let mut entity = None;
+    let handle = cx.add_window(|window, cx| {
+        let view = cx.new(|cx| {
+            let mut view = MemoryView::new(Language::SimplifiedChinese, window, cx);
+            view.service = service.clone();
+            view.set_visible(true, window, cx);
+            view
+        });
+        entity = Some(view.clone());
+        let harness = cx.new(|_| MemoryHarness(view));
+        Root::new(harness, window, cx)
+    });
+    let entity = entity.unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        for id in [
+            "memory-connect",
+            "memory-pause",
+            "memory-topics-tab",
+            "memory-sources-tab",
+            "memory-edit",
+            "memory-confirm",
+        ] {
+            assert!(window.try_find(id).is_none(), "{id}");
+        }
+        window.click(("memory-entry", 1_u64), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("memory-confirm").is_none());
+        assert!(window.try_find(("memory-evidence", 10_u64)).is_none());
+        assert!(window.try_find("memory-edit").is_none());
+    })
+    .unwrap();
+    cx.run_until_parked();
+    entity.update(cx, |view, _| assert!(view.detail.is_some()));
+    assert!(service.commands.lock().unwrap().is_empty());
 }
 
 #[gpui_kit::test]
@@ -44,7 +93,7 @@ fn changing_memory_search_during_load_cannot_restore_old_results(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-fn imported_history_is_readable_without_implying_extracted_memories(cx: &mut TestAppContext) {
+fn offline_delivery_does_not_imply_extracted_memories(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.add_window(|window, cx| {
         let mut view = MemoryView::new(Language::SimplifiedChinese, window, cx);
@@ -54,26 +103,24 @@ fn imported_history_is_readable_without_implying_extracted_memories(cx: &mut Tes
     });
     cx.run_until_parked();
     window
-        .update(cx, |view, window, cx| {
+        .update(cx, |view, _, _| {
             assert_eq!(view.overview.progress.pending, 3873);
-            assert_eq!(view.overview.progress.done, 0);
-            assert_eq!(view.overview.progress.candidates, 0);
-            assert_eq!(view.overview.progress.confirmed, 0);
-            assert!(view.overview.topics.is_empty());
+            assert_eq!(view.overview.progress.accepted, 0);
             assert!(view.overview.memories.is_empty());
-            view.mode = super::Mode::Sources;
-            cx.notify();
-            view.select(super::Selection::Source(10, 0), window, cx);
+            assert!(
+                view.overview
+                    .progress
+                    .provider_status
+                    .as_deref()
+                    .unwrap()
+                    .contains("offline")
+            );
         })
         .unwrap();
-    cx.run_until_parked();
-    window.update(cx, |view, _, _| {
-        assert!(matches!(view.detail, Some(Detail::Source(ref p)) if p.source.state == "pending" && !p.body.is_empty()));
-    }).unwrap();
 }
 
 #[gpui_kit::test]
-fn memory_review_revisions_and_forget_use_native_service(cx: &mut TestAppContext) {
+fn observation_deletion_can_be_cancelled_and_retry_uses_the_provider(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         cx.set_reduce_motion(true);
@@ -96,48 +143,23 @@ fn memory_review_revisions_and_forget_use_native_service(cx: &mut TestAppContext
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.try_find("assign-client-session").is_none());
+            window.click("memory-retry", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(matches!(
+            service.commands.lock().unwrap().as_slice(),
+            [MemoryCommand::RetryFailed]
+        ));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
             window.click(("memory-entry", 1_u64), cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.find(("memory-evidence", 10_u64)).visible());
-            window.click("memory-confirm", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        entity.update(cx, |view, cx| {
-            assert!(
-                matches!(view.detail,Some(Detail::Memory(ref d)) if d.entry.status=="confirmed")
-            );
-            cx.notify();
+        entity.update(cx, |view, _| {
+            assert!(view.detail.as_ref().is_some_and(|d| d.entry.id == 1))
         });
-        cx.update_window(handle.into(), |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("memory-confirm").is_none());
-            window.click("memory-edit", cx);
-            entity.update(cx, |view, cx| {
-                let (_, _, body) = view.editing.as_ref().unwrap();
-                body.update(cx, |body, cx| body.set_value("用户修订的记忆", window, cx));
-                view.refresh(window, cx);
-            });
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(handle.into(), |_, window, cx| {
-            entity.update(cx, |view, cx| {
-                assert_eq!(
-                    view.editing.as_ref().unwrap().2.read(cx).value().as_ref(),
-                    "用户修订的记忆"
-                )
-            });
-            window.render_frame(cx);
-            window.click("memory-save", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window.click("memory-forget", cx);
@@ -160,7 +182,6 @@ fn memory_review_revisions_and_forget_use_native_service(cx: &mut TestAppContext
         entity.update(cx, |view, _| {
             assert!(view.overview.memories.is_empty());
             assert!(view.detail.is_none());
-            assert_eq!(view.overview.sources.len(), 2);
         });
         assert!(
             service
@@ -168,65 +189,7 @@ fn memory_review_revisions_and_forget_use_native_service(cx: &mut TestAppContext
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|c| matches!(c,MemoryCommand::Revise {body,..} if body=="用户修订的记忆"))
+                .any(|c| matches!(c, MemoryCommand::ForgetMemory(1)))
         );
     }
-}
-
-#[gpui_kit::test]
-fn topics_filter_evidence_and_failure_details_without_assigning_threads(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        cx.set_reduce_motion(true);
-    });
-    let mut entity = None;
-    let window = cx.add_window(|window, cx| {
-        let view = cx.new(|cx| {
-            let mut view = MemoryView::new(Language::SimplifiedChinese, window, cx);
-            view.service = Arc::new(MemoryFixtures::default());
-            view.set_visible(true, window, cx);
-            view
-        });
-        entity = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    let entity = entity.unwrap();
-    cx.run_until_parked();
-    entity.update(cx, |view, _| {
-        view.archive = Some(relay_core::sessions::ClientSessionId(
-            "previous-archive".into(),
-        ));
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("memory-topics-tab", cx);
-        window.render_frame(cx);
-        window.click("memory-topic-relay", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    entity.update(cx, |view, _| {
-        assert_eq!(view.query.topic.as_deref(), Some("relay"));
-        assert!(
-            view.archive.is_none(),
-            "Changing topic must close unrelated provenance"
-        );
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("memory-sources-tab", cx);
-        window.render_frame(cx);
-        window.click(("memory-source", 11_u64), cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-    entity.update(cx, |view, _| {
-        assert!(matches!(view.detail,Some(Detail::Source(ref p)) if p.source.error.is_some()));
-    });
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("memory-open-archive").visible());
-        assert!(window.try_find("client-session-binding").is_none());
-    })
-    .unwrap();
 }

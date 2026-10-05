@@ -17,9 +17,9 @@ mod voice_cli;
 struct Services {
     agents: Arc<AgentRuntime>,
     settings: Arc<SettingsStore>,
-    threads: Arc<relay_runtime::native::NativeStore>,
+    threads: Arc<relay_runtime::resident::ResidentStore>,
+    memory: Arc<dyn relay_runtime::memory::MemoryProvider>,
     fetcher: Arc<MoliFetcher>,
-    client_sessions: Arc<ClientSessionStore>,
     files: Arc<FileStore>,
     voice: Arc<VoiceRuntime>,
 }
@@ -184,7 +184,7 @@ fn open_window(
                     window,
                     cx,
                 );
-                view.set_memory_services(services.threads, services.client_sessions, cx);
+                view.set_memory_service(services.memory, cx);
                 view.set_file_service(services.files, cx);
                 view.set_voice_service(services.voice, cx);
                 if quick {
@@ -302,7 +302,12 @@ fn main() {
                 .and_then(|s| s.to_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or("Missing MCP scope")?;
-            relay_runtime::native::serve_stdio(root, ThreadId(id)).map_err(|e| e.to_string())
+            relay_runtime::memory::serve_stdio(
+                root,
+                ThreadId(id),
+                args.get(4).and_then(|a| a.to_str()),
+            )
+            .map_err(|e| e.to_string())
         })();
         if let Err(e) = result {
             eprintln!("{e}");
@@ -315,10 +320,8 @@ fn main() {
         std::process::exit(2);
     }
     let directory = AgentRuntime::default_directory();
-    match relay_runtime::native::run_memory_cli(
-        &directory,
-        &std::env::args().skip(1).collect::<Vec<_>>(),
-    ) {
+    match relay_runtime::memory::run_cli(&directory, &std::env::args().skip(1).collect::<Vec<_>>())
+    {
         Ok(true) => return,
         Ok(false) => {}
         Err(error) => {
@@ -330,22 +333,33 @@ fn main() {
         return;
     }
     let settings = Arc::new(SettingsStore::new(directory.clone()));
-    let threads = match relay_runtime::native::NativeStore::open(directory.clone()).and_then(|s| {
-        s.migrate()?;
-        Ok(Arc::new(s))
-    }) {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("Could not open Relay's native state: {e:#}. Existing data preserved.");
+    let threads =
+        match relay_runtime::resident::ResidentStore::open(directory.clone()).and_then(|s| {
+            s.migrate()?;
+            Ok(Arc::new(s))
+        }) {
+            Ok(store) => store,
+            Err(e) => {
+                eprintln!("Could not open Relay's task state: {e:#}. Existing data preserved.");
+                return;
+            }
+        };
+    let memory = match relay_runtime::memory::open(&directory) {
+        Ok(provider) => provider,
+        Err(error) => {
+            eprintln!(
+                "Could not configure memory provider: {error:#}. Existing configuration and data preserved."
+            );
             return;
         }
     };
-    let agents = Arc::new(AgentRuntime::with_native(
+    let agents = Arc::new(AgentRuntime::with_memory(
         directory.clone(),
         threads.clone(),
+        memory.clone(),
     ));
     let resident =
-        match relay_runtime::native::ResidentWorker::start(threads.clone(), agents.clone()) {
+        match relay_runtime::resident::ResidentWorker::start(threads.clone(), agents.clone()) {
             Ok(worker) => Arc::new(worker),
             Err(e) => {
                 eprintln!("Could not start Relay: {e:#}");
@@ -370,8 +384,8 @@ fn main() {
         agents: agents.clone(),
         settings: settings.clone(),
         threads,
+        memory,
         fetcher: Arc::new(MoliFetcher::new(&directory)),
-        client_sessions: client_sessions.clone(),
         files,
         voice: voice.clone(),
     };
