@@ -22,6 +22,12 @@ pub struct MemoryProgress {
     pub hourly_budget: u64,
     pub runs_this_hour: u64,
     pub observer_error: Option<String>,
+    pub session_summaries: u64,
+    pub embedding_model: Option<String>,
+    pub embedding_indexed: u64,
+    pub embedding_pending: u64,
+    pub embedding_failed: u64,
+    pub embedding_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]

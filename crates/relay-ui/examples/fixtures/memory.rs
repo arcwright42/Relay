@@ -75,6 +75,8 @@ impl MemoryService for MemoryFixtures {
                 enabled: true,
                 hourly_budget: 60,
                 runs_this_hour: 23,
+                embedding_model: Some("qwen3.7-text-embedding".into()),
+                embedding_indexed: 1,
                 ..Default::default()
             },
             memories: if visible { vec![entry] } else { vec![] },

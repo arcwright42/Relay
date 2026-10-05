@@ -23,7 +23,7 @@
                  │ 后台 observer
            candidates + 来源版本
                  │ 主 Agent 检索、确认、修订
-          memories / FTS5 / topics
+          observations / session summaries / FTS5 / vectors / topics
 ```
 
 用户显式打开任务后，输入直接进入该任务。同一句 prompt 不经过主题分类器决定“当前还是新 thread”。主 Agent 可以在一次主对话中协调多项工作；独立执行是工具调用结果。
@@ -76,4 +76,4 @@ thread 的目标、显式选用资料采用快照/增量交付。常驻角色说
 
 `relay-core::memory::MemoryService` 提供类型化的分页查询、来源读取与用户操作。`NativeStore` 实现该接口；GPUI 记忆视图在后台 executor 调用，显示期间每三秒刷新状态，使用请求序号丢弃旧筛选结果。修订草稿不被轮询覆盖。
 
-旧会话 Tab 与归属命令已删除。`ClientSessionStore` 不再依赖任务目录或 Agent 的工作目录，只负责原生 JSONL 归档、增量同步和读取。记忆视图通过来源身份进入原始归档，不创建或分配任务。主题视图是模型标签集合；Embedding、向量召回与语义聚类仍未实现。
+旧会话 Tab 与归属命令已删除。`ClientSessionStore` 不再依赖任务目录或 Agent 的工作目录，只负责原生 JSONL 归档、增量同步和读取。记忆视图通过来源身份进入原始归档，不创建或分配任务。主题视图是模型标签集合；已提炼记忆和总结通过独立 Embedding 队列进入 SQLite 向量索引，Agent 使用语义与 FTS 融合召回。管理页面的列表筛选仍为字面匹配，自动语义聚类尚未实现。具体机制、源码对照和验证范围见 [原生记忆](NATIVE-MEMORY.md)。

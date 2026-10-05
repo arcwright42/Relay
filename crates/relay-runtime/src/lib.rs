@@ -172,6 +172,10 @@ impl Shared {
 
     fn event(&self, thread: ThreadId, generation: u64, event: Event) {
         let ready_event = matches!(&event, Event::Ready { .. });
+        let tool_event = match &event {
+            Event::Tool(tool) => Some(tool.id.clone()),
+            _ => None,
+        };
         let ended = matches!(
             &event,
             Event::TurnEnded { .. } | Event::Error { fatal: true, .. }
@@ -250,6 +254,7 @@ impl Shared {
                         message.tools.push(tool);
                     }
                 }
+                persist = true;
             }
             Event::Permission(permission) => state.view.permissions.push(permission),
             Event::PermissionResolved(id) => state.view.permissions.retain(|p| p.id != id),
@@ -280,7 +285,7 @@ impl Shared {
         if persist {
             self.persist(thread);
         }
-        if (ended || ready_event)
+        if (ended || ready_event || tool_event.is_some())
             && let Some(native) = &self.native
         {
             let state = self
@@ -301,6 +306,22 @@ impl Shared {
                     })();
                     if let Err(e) = result {
                         diagnostics::error(&self.root, thread, "native.session", &e.to_string());
+                    }
+                }
+                if let Some(tool_id) = tool_event
+                    && thread != native::OBSERVER
+                    && let Some(message) = messages.last()
+                {
+                    let saved = store::SavedMessage::from_message(message);
+                    if let Some(tool) = saved.tools.iter().find(|t| t.id == tool_id) {
+                        let request = messages
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == MessageRole::User)
+                            .map_or("", |m| m.text.as_str());
+                        if let Err(e) = native.capture_tool(thread, saved.id, request, tool) {
+                            diagnostics::error(&self.root, thread, "native.tool", &e.to_string());
+                        }
                     }
                 }
                 if ended && thread != native::OBSERVER && !messages.is_empty() {
@@ -965,6 +986,19 @@ impl AgentRuntime {
                 if text.is_empty() {
                     return Ok(());
                 }
+                let id = state
+                    .view
+                    .messages
+                    .last()
+                    .map_or(Some(1), |m| m.id.checked_add(1))
+                    .ok_or("Message ID exhausted")?;
+                let id = if let Some(native) = &self.shared.native {
+                    native
+                        .reserve_message_ids(thread, id)
+                        .map_err(|e| e.to_string())?
+                } else {
+                    id
+                };
                 let snapshot =
                     context::Snapshot::from_thread(definition.as_ref().expect("send thread"))
                         .with_files_directory(files::workspace_directory(&self.shared.root));
@@ -1005,7 +1039,6 @@ impl AgentRuntime {
                     snapshot,
                     context_sent,
                 });
-                let id = state.view.messages.last().map_or(1, |m| m.id + 1);
                 state.view.messages.push(ChatMessage {
                     id,
                     role: MessageRole::User,
@@ -1291,6 +1324,58 @@ mod tests {
         );
         assert!(runtime.snapshot(ThreadId(1)).error.is_none());
         assert!(runtime.snapshot(ThreadId(2)).error.is_none());
+    }
+    #[test]
+    fn native_tool_result_is_durable_before_turn_ended() {
+        let root = std::env::temp_dir().join(format!("relay-tool-event-{}", uuid::Uuid::new_v4()));
+        let native = Arc::new(native::NativeStore::open(root.clone()).unwrap());
+        let runtime = AgentRuntime::with_native(root.clone(), native.clone());
+        runtime.shared.update(native::MAIN, 0, |state| {
+            state.view.messages.push(ChatMessage {
+                id: 1,
+                role: MessageRole::User,
+                text: "inspect a file".into(),
+                status: MessageStatus::Complete,
+                tools: vec![],
+                metrics: None,
+            });
+            state.view.messages.push(ChatMessage {
+                id: 2,
+                role: MessageRole::Assistant,
+                text: String::new(),
+                status: MessageStatus::Streaming,
+                tools: vec![],
+                metrics: None,
+            });
+        });
+        runtime.shared.event(
+            native::MAIN,
+            0,
+            Event::Tool(ToolActivity {
+                id: "read".into(),
+                title: "Read".into(),
+                status: "completed".into(),
+                input: "file.rs".into(),
+                output: "TAIL_BEFORE_TURN_END".into(),
+            }),
+        );
+        assert_eq!(
+            runtime
+                .snapshot(native::MAIN)
+                .messages
+                .last()
+                .unwrap()
+                .status,
+            MessageStatus::Streaming
+        );
+        let saved = store::load(&root, native::MAIN).unwrap();
+        assert_eq!(
+            saved.messages.last().unwrap().tools[0].output,
+            "TAIL_BEFORE_TURN_END"
+        );
+        assert!(native.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sources WHERE origin='relay-tool' AND instr(body,'TAIL_BEFORE_TURN_END')>0)",[],|r|r.get::<_,bool>(0)).unwrap());
+        runtime.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn model_choice_is_not_optimistically_committed() {

@@ -50,7 +50,7 @@ fn format_version() -> u32 {
     1
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SavedMessage {
     pub id: u64,
     pub role: String,
@@ -62,15 +62,15 @@ pub struct SavedMessage {
     pub metrics: Option<crate::metrics::SavedMetrics>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SavedTool {
-    id: String,
-    title: String,
-    status: String,
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) status: String,
     #[serde(default)]
-    input: String,
+    pub(crate) input: String,
     #[serde(default)]
-    output: String,
+    pub(crate) output: String,
 }
 
 impl SavedMessage {

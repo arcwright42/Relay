@@ -79,8 +79,10 @@ fn tool(value: Value) -> Option<Event> {
             return String::new();
         }
         let raw = value.to_string();
-        let mut result: String = raw.chars().take(16000).collect();
-        if raw.chars().count() > 16000 {
+        // Preserve large evidence for the runtime's bounded observation fragments.
+        // A protocol safety ceiling is explicit; it is not the observer input budget.
+        let mut result: String = raw.chars().take(1_000_000).collect();
+        if raw.chars().count() > 1_000_000 {
             result.push_str("\n[tool evidence truncated]");
         }
         result
