@@ -4,4 +4,4 @@
 
 没有 Jev 调用、路由密钥配置页或 `--jev-save-key` 命令。旧项目保留为历史 thread，不作为新架构的必需层级。
 
-当前实现和历史会话主题归类见 [常驻 Agent 与原生记忆](NATIVE-MEMORY.md)；产品行为见 [产品规格](PRODUCT.md)。此前方案可从 Git 历史查看。
+当前任务边界和 Claude-Mem 接入见 [Memory Provider](MEMORY-PROVIDERS.md)；产品行为见 [产品规格](PRODUCT.md)。此前方案可从 Git 历史查看。

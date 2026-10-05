@@ -1,8 +1,8 @@
 use super::*;
 
-impl NativeStore {
+impl ResidentStore {
     pub(super) fn migrate_legacy(&self) -> Result<()> {
-        let done: bool = self.db.lock().expect("native store").query_row(
+        let done: bool = self.db.lock().expect("resident store").query_row(
             "SELECT EXISTS(SELECT 1 FROM meta WHERE key='legacy_imported')",
             [],
             |r| r.get(0),
@@ -46,7 +46,7 @@ impl NativeStore {
         for p in &projects {
             let id = p["id"].as_u64().context("Invalid legacy identifier")?;
             ensure!(
-                id > 0 && id < OBSERVER.0,
+                id > 0 && id < RETIRED_OBSERVER.0,
                 "Legacy ID conflicts with reserved thread"
             );
             let old = self.root.join(format!("projects/{id}/conversation.json"));
@@ -67,7 +67,7 @@ impl NativeStore {
             }
         }
         {
-            let mut db = self.db.lock().expect("native store");
+            let mut db = self.db.lock().expect("resident store");
             let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             for p in &projects {
                 let id = p["id"].as_u64().context("Invalid ID")?;
@@ -76,60 +76,10 @@ impl NativeStore {
             Self::bump(&tx)?;
             tx.commit()?;
         }
-        for p in &projects {
-            let id = p["id"].as_u64().context("Invalid ID")?;
-            let title = p["name"].as_str().unwrap_or("Imported conversation");
-            for (i, m) in p["memory"].as_array().into_iter().flatten().enumerate() {
-                self.ingest_fragments(
-                    &format!("legacy:{id}:memory:{i}"),
-                    Some(ThreadId(id)),
-                    "legacy-memory",
-                    title,
-                    &m.to_string(),
-                )?;
-            }
-            self.replay_transcript(ThreadId(id))?;
-        }
         self.db
             .lock()
-            .expect("native store")
+            .expect("resident store")
             .execute("INSERT OR IGNORE INTO meta VALUES('legacy_imported',1)", [])?;
         Ok(())
-    }
-
-    /// Called on the archive worker after a durable snapshot, never on the UI thread.
-    pub(crate) fn ingest_archive(
-        &self,
-        client: &str,
-        native_id: &str,
-        title: &str,
-        messages: &[(u64, String, String)],
-    ) -> Result<()> {
-        // Fixed message groups form episodes; appending only revises the last partial group.
-        // A complete session is never injected wholesale or treated as a single confirmed fact.
-        let origin = format!("client:{client}:{native_id}");
-        let mut keys = std::collections::BTreeSet::new();
-        for group in messages.chunks(16) {
-            let first = group.first().context("episode")?.0;
-            let text = json!(
-                group
-                    .iter()
-                    .map(|(id, role, text)| json!({"message_id":id,"role":role,"text":text}))
-                    .collect::<Vec<_>>()
-            )
-            .to_string();
-            let fragments = self.ingest_fragments(
-                &format!("{origin}:episode:{first}"),
-                None,
-                &origin,
-                title,
-                &text,
-            )?;
-            for (key, source) in fragments {
-                keys.insert(key);
-                self.queue_summary(source)?;
-            }
-        }
-        self.retire_missing(&origin, &keys)
     }
 }

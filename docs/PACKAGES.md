@@ -18,7 +18,7 @@
 
 运行依赖方向是 `relay → relay-ui → relay-core` 和 `relay → relay-runtime → relay-acp → relay-core`。入口注入 AgentService、ThreadService 和 SettingsService；UI 只使用领域命令和快照，不依赖 ACP 或进程 API。ACP SDK 类型不会穿透到 UI 或领域包。`relay-core` 不依赖 UI、ACP SDK、异步运行时或平台 API。thread预览资料已移除。
 
-当前thread存储放在 `relay-runtime::native`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ThreadService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。macOS 能力已拆入 `relay-platform`；SQLite 已在 runtime 内实现，不新增数据库服务或 workspace crate。
+当前thread存储放在 `relay-runtime::resident`，快照和增量在 `context`，对话与检查点在 `store`，诊断序列化在 `metrics`。ThreadService 的 apply 在 UI 后台 executor 调用，只有原子保存完成才发布新版本；快照读取不做磁盘 I/O。macOS 能力已拆入 `relay-platform`；SQLite 已在 runtime 内实现，不新增数据库服务或 workspace crate。
 
 个人文件工作区复用现有包：`relay-core::files` 定义文件列表、内容、位置、命令与 `FileService`，`relay-runtime::files` 执行后台目录读取、导入和冲突检查保存，`relay-ui::workbench::files` 提供独立文件 Tab。应用入口装配 FileStore，使用应用级统一个人目录，不依赖 ThreadService 或 AgentService。各会话的 Agent 默认使用同一目录。PDF / Office 首页预览由 macOS Quick Look 在后台生成，不新增直接依赖或数据库。
 
@@ -49,7 +49,7 @@ ACP SDK 仍固定 2.2.0，仅显式开启 `unstable_end_turn_token_usage` 来读
 
 TTS 使用 24 kHz PCM16 流，收到音频就交给 `MacAudioOutput`，平台层用 CPAL 播放和重采样，最多缓存 4 秒并反压，不把音频写入磁盘。完成或取消时销毁输出流；播放完成包含硬件缓冲时间，然后轮次层再等待 300 ms 尾音才恢复收音。共同的 `spoken_text` 策略跳过代码块、最多朗读 3,000 字。保留 `MacSpeechOutput` 作为可显式注入的系统声音实现，云端失败不会静默切换。默认半双工，用户可点「取消并重新说话」；当前不支持用人声打断播放。
 
-入口在创建 NativeStore、AgentRuntime 和 ResidentWorker 后组装语音管线并管理独立 `VoicePanel`。UI 只显示阶段、当前请求/回复/任务、继续和结束按钮，不处理音频或直接发送 Agent 命令。打开thread会话复用现有窗口事件；关闭浮层、点击结束或 Esc 结束会话并恢复等待唤醒，旧窗口不能结束新会话。设置默认关闭，开关和语言由同一偏好写入线程合并持久化。
+入口在创建 ResidentStore、AgentRuntime 和 ResidentWorker 后组装语音管线并管理独立 `VoicePanel`。UI 只显示阶段、当前请求/回复/任务、继续和结束按钮，不处理音频或直接发送 Agent 命令。打开thread会话复用现有窗口事件；关闭浮层、点击结束或 Esc 结束会话并恢复等待唤醒，旧窗口不能结束新会话。设置默认关闭，开关和语言由同一偏好写入线程合并持久化。
 
 构建固定 `sherpa-onnx 1.13.8`（macOS static）、`cpal 0.16.0`、`objc2-av-foundation 0.3.2`。`crates/relay-runtime/resources/voice/manifest.json` 固定引擎、模型、VAD、关键词和许可证的来源及 SHA-256：中英双语 3M Zipformer，chunk-16，int8 encoder/joiner、fp32 decoder，约 5.2 MiB；Silero VAD 643,854 字节。`verify / bundle` 准备并校验资源，运行时重新验证。模型和库缓存于 Cargo target，随应用资源交付，不进入 Git、不部署独立服务。平台测试使用仓库内的短合成 WAV 验证实际 VAD，runtime 使用受控端口验证整条轮次与取消，测试不调用远程 ASR 或真实 Agent。
 
@@ -100,8 +100,10 @@ cargo xtask start
 
 对外分发所需的 notarization 和更新机制尚未接入。构建产物、编辑器配置、本机签名身份与日志不进入 Git。
 
-本地 Client 会话归档属于 relay-runtime，后台归档使用 relay-core::sessions 的快照和只读打开/同步命令，记忆页面通过 relay-core::memory 读取原生状态并审核记录。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [归档与记忆入口](CLIENT-SESSIONS.md)。
+本地 Client 会话归档属于 relay-runtime，后台归档使用 relay-core::sessions 的快照和只读打开/同步命令，记忆页面通过 relay-core::memory 读取 Claude-Mem 观察与投递状态。首个 Codex 解析器只读取原生 JSONL；磁盘归档、增量游标与 30 分钟调度不依赖 ACP 会话创建或发送。见 [归档与记忆入口](CLIENT-SESSIONS.md)。
 
-## 原生记忆和任务
+## 记忆 Provider 和任务
 
-`relay-runtime::native` 使用固定 `rusqlite 0.40.2`（bundled SQLite / FTS5），承担 schema、兼容迁移、事件采集、带租约的提炼队列、检索与 stdio MCP。`NativeStore` 为应用的 ThreadService；`ResidentWorker` 负责队列、结果 outbox 和后台 observer。`relay --relay-mcp <data-dir> <thread-id>` 在创建 UI 前启动协议入口，stdio 只输出 JSON-RPC。旧 JSON ThreadStore 仅供旧模型/测试兼容，生产入口不再装配它。详见 [原生机制](NATIVE-MEMORY.md)。
+`relay-runtime::memory` 定义 Memory Provider 和统一 stdio MCP 入口，当前只适配 Claude-Mem；应用、上下文、事件采集、后台工作和 UI 选择同一个 Provider。MCP 的任务工具仍属于 Relay，记忆工具由 Provider 提供。入口为 `relay --relay-mcp <data-dir> <thread-id> [provider-fingerprint]`，stdio 只输出 JSON-RPC。
+
+`relay-runtime::resident` 使用固定 `rusqlite 0.40.2`（bundled SQLite），只拥有任务、会话、消息编号与兼容迁移。`ResidentStore` 是 ThreadService；`ResidentWorker` 负责任务请求、结果通知和显式启用的历史扫描。Native 记忆源码、Observer、Embedding、FTS/向量引擎和专属 CLI 已删除。Claude-Mem adapter 通过现有 ureq 接入本地 Worker，Relay 的 memory SQLite 仅用于投递日志；未新增 Rust 依赖。旧 JSON ThreadStore 仅供兼容和测试。详见 [Memory Provider](MEMORY-PROVIDERS.md)。

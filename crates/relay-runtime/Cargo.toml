@@ -1,6 +1,6 @@
 [package]
 name = "relay-runtime"
-description = "Resident agent coordination, native client sessions, and provenance-backed memory"
+description = "Resident agent coordination, client sessions, and memory provider adapters"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

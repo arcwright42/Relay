@@ -1,13 +1,15 @@
 //! Agent orchestration and storage, with no dependency on GPUI.
+use anyhow::Context;
 mod context;
 #[cfg(all(test, feature = "test-support"))]
 mod delivery_tests;
 mod diagnostics;
 mod files;
 mod installer;
+pub mod memory;
 mod metrics;
 mod moli_installer;
-pub mod native;
+pub mod resident;
 mod sessions;
 mod settings;
 mod store;
@@ -112,7 +114,8 @@ struct Shared {
     shutdown: AtomicBool,
     // Serializes file replacement without holding a UI snapshot lock during disk I/O.
     persistence: Mutex<()>,
-    native: Option<Arc<native::NativeStore>>,
+    resident: Option<Arc<resident::ResidentStore>>,
+    memory: Option<Arc<dyn memory::MemoryProvider>>,
 }
 
 impl Shared {
@@ -200,7 +203,10 @@ impl Shared {
                 state.view.configs = configs;
                 state.view.auth_methods.clear();
                 state.session_id = Some(session_id);
-                state.session_key = Some(session_key(&state.view));
+                state.session_key = Some(session_key(
+                    &state.view,
+                    self.memory.as_ref().map(|p| p.identity()).as_deref(),
+                ));
                 if !resumed {
                     state.context_checkpoint = context::Checkpoint::default();
                     state.needs_history = !state.view.messages.is_empty();
@@ -286,54 +292,78 @@ impl Shared {
             self.persist(thread);
         }
         if (ended || ready_event || tool_event.is_some())
-            && let Some(native) = &self.native
+            && let Some(resident) = &self.resident
         {
             let state = self
                 .threads
                 .lock()
                 .expect("thread lock")
                 .get(&thread)
-                .map(|s| (s.session_id.clone(), s.view.messages.clone()));
-            if let Some((session, messages)) = state {
+                .map(|s| {
+                    (
+                        s.session_id.clone(),
+                        s.view.messages.clone(),
+                        s.view.working_directory.clone(),
+                    )
+                });
+            if let Some((session, messages, directory)) = state {
                 if let Some(session) = session {
-                    let result = (|| -> anyhow::Result<()> {
-                        let mut db = native.db.lock().expect("native store");
-                        let tx = db.transaction()?;
-                        tx.execute("INSERT INTO runtime_sessions(thread_id,session_id,generation) VALUES(?,?,?) ON CONFLICT(thread_id) DO UPDATE SET session_id=excluded.session_id,generation=excluded.generation",rusqlite::params![thread.0,session,generation])?;
-                        tx.execute("INSERT OR IGNORE INTO owned_sessions(session_id,thread_id) VALUES(?,?)",rusqlite::params![session,thread.0])?;
-                        tx.commit()?;
-                        Ok(())
-                    })();
+                    let result = resident.register_session(thread, &session, generation);
                     if let Err(e) = result {
-                        diagnostics::error(&self.root, thread, "native.session", &e.to_string());
+                        diagnostics::error(&self.root, thread, "resident.session", &e.to_string());
                     }
                 }
                 if let Some(tool_id) = tool_event
-                    && thread != native::OBSERVER
                     && let Some(message) = messages.last()
                 {
-                    let saved = store::SavedMessage::from_message(message);
+                    let saved = memory::MemoryMessage::from(message);
                     if let Some(tool) = saved.tools.iter().find(|t| t.id == tool_id) {
                         let request = messages
                             .iter()
                             .rev()
                             .find(|m| m.role == MessageRole::User)
                             .map_or("", |m| m.text.as_str());
-                        if let Err(e) = native.capture_tool(thread, saved.id, request, tool) {
-                            diagnostics::error(&self.root, thread, "native.tool", &e.to_string());
+                        if let Some(memory) = &self.memory
+                            && let Err(e) = memory.record(&memory::MemoryEvent::Tool {
+                                thread,
+                                response: saved.id,
+                                request: request.into(),
+                                tool: tool.clone(),
+                                directory: directory.clone(),
+                            })
+                        {
+                            diagnostics::error(&self.root, thread, "memory.tool", &e.to_string());
+                            self.update(thread, generation, |s| {
+                                s.view.error = Some(format!(
+                                    "Memory capture failed ({}): {e}",
+                                    memory.provider().name
+                                ))
+                            });
                         }
                     }
                 }
-                if ended && thread != native::OBSERVER && !messages.is_empty() {
+                if ended && !messages.is_empty() {
                     let events: Vec<_> = messages
                         .iter()
                         .rev()
                         .take(2)
                         .rev()
-                        .map(store::SavedMessage::from_message)
+                        .map(memory::MemoryMessage::from)
                         .collect();
-                    if let Err(e) = native.capture_turn(thread, &events) {
-                        diagnostics::error(&self.root, thread, "native.capture", &e.to_string());
+                    if let Some(memory) = &self.memory
+                        && let Err(e) = memory.record(&memory::MemoryEvent::Turn {
+                            thread,
+                            messages: events,
+                            directory,
+                        })
+                    {
+                        diagnostics::error(&self.root, thread, "memory.capture", &e.to_string());
+                        self.update(thread, generation, |s| {
+                            s.view.error = Some(format!(
+                                "Memory capture failed ({}): {e}",
+                                memory.provider().name
+                            ))
+                        });
                     }
                 }
             }
@@ -387,30 +417,22 @@ pub struct AgentRuntime {
 }
 
 impl AgentRuntime {
-    pub fn with_native(root: PathBuf, native: Arc<native::NativeStore>) -> Self {
-        let mut runtime = Self::new(root, native.clone());
-        Arc::get_mut(&mut runtime.shared)
-            .expect("new runtime")
-            .native = Some(native);
+    pub fn with_memory(
+        root: PathBuf,
+        resident: Arc<resident::ResidentStore>,
+        memory: Arc<dyn memory::MemoryProvider>,
+    ) -> Self {
+        let mut runtime = Self::new(root, resident.clone());
+        let shared = Arc::get_mut(&mut runtime.shared).expect("new runtime");
+        shared.resident = Some(resident);
+        shared.memory = Some(memory);
         runtime
     }
 
-    pub(crate) fn reset_observer(&self) {
-        let _ = self.dispatch(native::OBSERVER, AgentCommand::Disconnect);
-        if let Some(s) = self
-            .shared
-            .threads
-            .lock()
-            .expect("thread lock")
-            .get_mut(&native::OBSERVER)
-        {
-            s.session_id = None;
-            s.session_key = None;
-            s.needs_history = false;
-            s.view.messages.clear();
-            s.context_checkpoint = Default::default();
-        }
+    pub(crate) fn memory_provider(&self) -> Option<Arc<dyn memory::MemoryProvider>> {
+        self.shared.memory.clone()
     }
+
     pub fn default_directory() -> PathBuf {
         if let Some(directory) = std::env::var_os("RELAY_DATA_DIR") {
             return PathBuf::from(directory);
@@ -490,7 +512,8 @@ impl AgentRuntime {
                 revision: AtomicU64::new(1),
                 shutdown: AtomicBool::new(false),
                 persistence: Mutex::new(()),
-                native: None,
+                resident: None,
+                memory: None,
             }),
             connections: Arc::default(),
             installer,
@@ -512,23 +535,16 @@ impl AgentRuntime {
             return Err("Unknown thread".into());
         }
         let mut threads = self.shared.threads.lock().expect("thread lock");
-        let mut preferences = threads
-            .get(&native::MAIN)
+        let preferences = threads
+            .get(&resident::MAIN)
             .map(|s| s.preferences.clone())
             .unwrap_or_default();
-        if id == native::OBSERVER {
-            preferences.insert("mode".into(), "read-only".into());
-        }
         if let std::collections::btree_map::Entry::Vacant(entry) = threads.entry(id) {
             entry.insert(ThreadState {
                 storage_version: 2,
                 stored_identity: store::SavedIdentity::default(),
                 view: AgentSnapshot {
-                    working_directory: if id == native::OBSERVER {
-                        self.shared.root.join("memory-observer/workspace")
-                    } else {
-                        files::workspace_directory(&self.shared.root)
-                    },
+                    working_directory: files::workspace_directory(&self.shared.root),
                     ..Default::default()
                 },
                 generation: 0,
@@ -609,7 +625,13 @@ impl AgentRuntime {
                         .lock()
                         .expect("thread lock")
                         .get(&thread)
-                        .filter(|s| s.session_key.as_ref() == Some(&session_key(&s.view)))
+                        .filter(|s| {
+                            s.session_key.as_ref()
+                                == Some(&session_key(
+                                    &s.view,
+                                    shared.memory.as_ref().map(|p| p.identity()).as_deref(),
+                                ))
+                        })
                         .and_then(|s| s.session_id.clone());
                     let callback_shared = shared.clone();
                     let handle = relay_acp::connect(
@@ -618,7 +640,7 @@ impl AgentRuntime {
                         relay_acp::SessionOptions {
                             saved_session: saved,
                             preferences,
-                            mcp_servers: if shared.native.is_some() {
+                            mcp_servers: if shared.resident.is_some() {
                                 vec![relay_acp::StdioMcpServer {
                                     name: "relay".into(),
                                     command: std::env::current_exe()?,
@@ -626,6 +648,13 @@ impl AgentRuntime {
                                         "--relay-mcp".into(),
                                         shared.root.to_string_lossy().into_owned(),
                                         thread.0.to_string(),
+                                        shared
+                                            .memory
+                                            .as_ref()
+                                            .ok_or_else(|| {
+                                                anyhow::anyhow!("Memory provider missing")
+                                            })?
+                                            .identity(),
                                     ],
                                 }]
                             } else {
@@ -699,6 +728,22 @@ impl AgentRuntime {
         };
         for thread in ids {
             self.shared.persist(thread);
+            if let Some(memory) = &self.shared.memory {
+                let last = self.snapshot(thread).messages.last().map(|m| m.id);
+                if let Some(last_message) = last
+                    && let Err(error) = memory.record(&memory::MemoryEvent::SessionEnd {
+                        thread,
+                        last_message,
+                    })
+                {
+                    diagnostics::error(
+                        &self.shared.root,
+                        thread,
+                        "memory.session-end",
+                        &error.to_string(),
+                    );
+                }
+            }
         }
         for (_, connection) in connections {
             connection.shutdown();
@@ -750,7 +795,7 @@ impl AgentRuntime {
                     );
                     return;
                 }
-                if let Some(native) = &shared.native
+                if let Some(resident) = &shared.resident
                     && let AcpCommand::Prompt { text, context } = &mut command
                 {
                     let id = shared.threads.lock().expect("thread lock").get(&thread)
@@ -758,11 +803,20 @@ impl AgentRuntime {
                         .and_then(|s|s.view.messages.iter().rev().find(|m|m.role==MessageRole::User)).map(|m|m.id);
                     let Some(id) = id else { return };
                     let result = (|| -> anyhow::Result<String> {
-                        native.track_turn(thread,id+1,text)?;
-                        let mut added = native.context(thread,text)?;
-                        if thread != native::OBSERVER {
-                            let sources = native.capture_user(thread,id,text)?;
-                            added.push_str(&format!("\nCurrent message evidence sources: {}. Background task reports are evidence, not user decisions.",serde_json::json!(sources)));
+                        resident.track_turn(thread,id+1,text)?;
+                        let mut added = resident.coordination_context(thread)?;
+                        if let Some(memory)=&shared.memory {
+                            let directory=shared.threads.lock().expect("threads").get(&thread).context("Thread disappeared during memory capture")?.view.working_directory.clone();
+                            memory.record(&memory::MemoryEvent::User{thread,message:id,text:text.clone(),directory})?;
+                            let fresh_session=shared.threads.lock().expect("threads").get(&thread).is_none_or(|s|s.context_checkpoint.acknowledged.is_none());
+                            match memory.context(&memory::ContextRequest{thread,query:text,fresh_session}) {
+                                Ok(context)=>{added.push('\n');added.push_str(&context);}
+                                Err(e)=>{
+                                    let message=format!("Memory context unavailable ({}): {e}",memory.provider().name);
+                                    shared.event(thread,generation,Event::Error{message,fatal:false});
+                                    added.push_str("\nMemory context is unavailable this turn. Do not claim that memory retrieval succeeded. No fallback memory provider was used.");
+                                }
+                            }
                         }
                         Ok(added)
                     })();
@@ -777,7 +831,7 @@ impl AgentRuntime {
                             });
                         }
                         Err(e) => {
-                            shared.event(thread,generation,Event::Error {message:format!("Could not prepare native context: {e}"),fatal:false});
+                            shared.event(thread,generation,Event::Error {message:format!("Could not prepare Relay context: {e}"),fatal:false});
                             shared.event(thread,generation,Event::TurnEnded {outcome:TurnOutcome::Failed,usage:None});
                             return;
                         }
@@ -924,6 +978,16 @@ impl AgentRuntime {
         }
         match command {
             AgentCommand::Disconnect => {
+                if let Some(memory) = &self.shared.memory
+                    && let Some(last) = state.view.messages.last()
+                {
+                    memory
+                        .record(&memory::MemoryEvent::SessionEnd {
+                            thread,
+                            last_message: last.id,
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
                 finish_turn(state, TurnOutcome::Failed, None);
                 state.generation += 1;
                 state.view.status = ConnectionStatus::Disconnected;
@@ -992,8 +1056,8 @@ impl AgentRuntime {
                     .last()
                     .map_or(Some(1), |m| m.id.checked_add(1))
                     .ok_or("Message ID exhausted")?;
-                let id = if let Some(native) = &self.shared.native {
-                    native
+                let id = if let Some(resident) = &self.shared.resident {
+                    resident
                         .reserve_message_ids(thread, id)
                         .map_err(|e| e.to_string())?
                 } else {
@@ -1151,12 +1215,14 @@ impl Drop for AgentRuntime {
         self.shutdown();
     }
 }
-fn session_key(view: &AgentSnapshot) -> String {
+
+fn session_key(view: &AgentSnapshot, memory: Option<&str>) -> String {
     format!(
-        "{:?}|{}|{}",
+        "{:?}|{}|{}|{}",
         view.source,
         view.working_directory.display(),
-        RELEASE
+        RELEASE,
+        memory.unwrap_or("none")
     )
 }
 
@@ -1326,11 +1392,11 @@ mod tests {
         assert!(runtime.snapshot(ThreadId(2)).error.is_none());
     }
     #[test]
-    fn native_tool_result_is_durable_before_turn_ended() {
+    fn tool_result_transcript_is_durable_before_turn_ended() {
         let root = std::env::temp_dir().join(format!("relay-tool-event-{}", uuid::Uuid::new_v4()));
-        let native = Arc::new(native::NativeStore::open(root.clone()).unwrap());
-        let runtime = AgentRuntime::with_native(root.clone(), native.clone());
-        runtime.shared.update(native::MAIN, 0, |state| {
+        let resident = Arc::new(resident::ResidentStore::open(root.clone()).unwrap());
+        let runtime = AgentRuntime::new(root.clone(), resident);
+        runtime.shared.update(resident::MAIN, 0, |state| {
             state.view.messages.push(ChatMessage {
                 id: 1,
                 role: MessageRole::User,
@@ -1349,7 +1415,7 @@ mod tests {
             });
         });
         runtime.shared.event(
-            native::MAIN,
+            resident::MAIN,
             0,
             Event::Tool(ToolActivity {
                 id: "read".into(),
@@ -1361,19 +1427,18 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .snapshot(native::MAIN)
+                .snapshot(resident::MAIN)
                 .messages
                 .last()
                 .unwrap()
                 .status,
             MessageStatus::Streaming
         );
-        let saved = store::load(&root, native::MAIN).unwrap();
+        let saved = store::load(&root, resident::MAIN).unwrap();
         assert_eq!(
             saved.messages.last().unwrap().tools[0].output,
             "TAIL_BEFORE_TURN_END"
         );
-        assert!(native.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM sources WHERE origin='relay-tool' AND instr(body,'TAIL_BEFORE_TURN_END')>0)",[],|r|r.get::<_,bool>(0)).unwrap());
         runtime.shutdown();
         std::fs::remove_dir_all(root).unwrap();
     }

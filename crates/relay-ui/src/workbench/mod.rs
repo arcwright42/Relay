@@ -171,26 +171,6 @@ impl Workbench {
                 cx.notify();
             }
         })];
-        subscriptions.push(cx.subscribe_in(
-            &memory,
-            window,
-            |this, _, _: &memory::ConnectCoordinator, window, cx| {
-                this.navigate(Page::Home, window, cx);
-                if let Some(index) = this.threads.iter().position(|t| t.id.0 == 0) {
-                    let state = &this.agent_states[index];
-                    if matches!(
-                        state.status,
-                        ConnectionStatus::Disconnected | ConnectionStatus::Failed
-                    ) && let Err(error) = this.agent_service.dispatch(
-                        this.threads[index].id,
-                        AgentCommand::Connect(state.source.clone()),
-                    ) {
-                        this.agent_errors[index] = Some(error);
-                    }
-                }
-                cx.notify();
-            },
-        ));
         for draft in &drafts {
             subscriptions.push(
                 cx.subscribe_in(draft, window, |this, _, event, window, cx| {
@@ -218,7 +198,6 @@ impl Workbench {
                     .update_in(cx, |this, window, cx| {
                         this.refresh_threads(window, cx);
                         this.refresh_agents(cx);
-                        this.refresh_memory_agent(cx);
                         this.advance_pending_send(window, cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
@@ -301,9 +280,6 @@ impl Workbench {
             self.selected_thread = self.threads.iter().position(|t| t.id.0 == 0).unwrap_or(0);
         }
         self.page = page;
-        if page == Page::Memory {
-            self.refresh_memory_agent(cx);
-        }
         self.memory.update(cx, |memory, cx| {
             memory.set_visible(page == Page::Memory, window, cx)
         });

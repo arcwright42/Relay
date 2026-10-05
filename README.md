@@ -2,26 +2,26 @@
 
 <img src="assets/relay-icon.png" width="96" alt="Relay app icon" />
 
-**常驻的个人 Agent：持续对话，按需委派任务，记住有来源的偏好和决定。**
+**常驻的个人 Agent：持续对话，按需委派任务，保留可检索的工作线索。**
 
-Relay 是 Rust / GPUI Kit 原生桌面应用，通过 ACP 连接本地 Codex。应用维护持续主对话、独立任务 thread、个人文件和原生记忆；不需要 Project 或 Jev 路由服务，也不接入 claude-mem 基建。
+Relay 是 Rust / GPUI Kit 原生桌面应用，通过 ACP 连接本地 Codex。应用维护持续主对话、独立任务 thread、个人文件和独立的 Memory Provider 接口；任务调度由 Relay 管理，记忆当前只接入本地 Claude-Mem Worker。
 
 ## 当前能力
 
 - 首页、全局快捷入口、语音默认进入同一主对话；打开任务或显式选择任务后，输入进入该任务。话题变化不自动切换 thread。
 - 主 Agent 使用 `create_task` / `continue_task` / `inspect_task` 调度；后台持久队列派发，结果回到主对话，活动页展示等待、进度、待检查和失败状态。
-- 原生记忆参考 claude-mem 的工具事件采集、连续 observation、会话总结、恢复上下文和渐进检索，采用 Rust + SQLite/FTS5/向量索引 + 本地 stdio MCP；Embedding 支持 OpenAI 兼容服务。
-- 记忆页面展示导入与提炼状态、候选和已确认记录、主题标签及来源；支持确认、修订、遗忘和失败重试。
-- 历史 Codex session 在后台只读归档，从来源查看原始会话；旧“本地会话”Tab 和手动归属已移除。主题标签不改变会话身份或消息目标。
+- 顶层 Memory Provider 统一事件采集、上下文、MCP 工具、后台任务和记忆页面。Claude-Mem 接入其真实 observation、会话总结、渐进检索和上下文 API；Relay 只保留持久投递队列，原 Native 记忆引擎已删除。
+- 记忆页面展示观察记录、搜索与详情、投递状态、失败重试和单条观察删除；不提供已移除的候选确认、版本修订和提炼预算控制。
+- 历史 Codex session 在后台只读归档。历史记忆导入需显式开启；不改变会话身份或消息目标。旧来源/主题页随 Native 引擎移除。
 - 本地 Codex 发现、认证、真实流式对话、工具权限、模型配置、取消和原生 session 恢复。更多 Harness 待接入。
 - thread 文字资料按需选用；个人 Files 空间支持导入、新建、文本/Markdown 编辑、图片及 PDF/Office 首页预览、冲突检测和本地文件跳转。
 - `⌃⌥Space` 取得选区和 URL，Moli 后台补充网页上下文；小窗回复可展开到同一 thread。
 - 本地“嘿 relay / Hey Relay”唤醒和 VAD，千问 ASR → 主对话 → TTS，支持连续轮次和取消；设置默认关闭语音。
 - 中文/English、原生菜单、开发检查器、关闭窗口后常驻。退出应用结束工作进程。
 
-后台记忆在主对话连接后开始提炼，默认最多 60 次模型调用/小时，可在对话中暂停或调整。用户可以让 Relay 检索来源、修订和遗忘记忆。候选 observation 不自动成为确认事实；来源改写会使旧结论失效。当前检索使用全文索引，归类使用模型主题标签，尚未接入向量检索或专门的聚类图界面。
+Claude-Mem 是唯一记忆 Provider，由独立 Worker 管理提炼模型、总结、索引与额度。Relay 不自动安装或启动 Worker；未连接时事件留在本地队列，记忆读取显式报离线，Agent 仍可继续任务。记忆上下文可设为关闭、执行 session 首轮或每轮注入。配置与完整边界见 [Memory Provider](docs/MEMORY-PROVIDERS.md)。
 
-首次升级会把旧项目保留为历史 thread，旧薄记忆作为来源重新提炼，主对话使用独立身份。旧文件保留。默认数据目录为 `~/Library/Application Support/Relay`，支持 `RELAY_DATA_DIR`。详细行为、迁移和限制见 [原生机制](docs/NATIVE-MEMORY.md)。
+升级保留旧任务、会话和 Native 记忆数据文件，新数据库只建立任务/会话状态，不再建立 Native 记忆表。旧数据不会自动转成 Claude-Mem 观察；旧 Embedding Key 不会被转交。数据目录默认为 `~/Library/Application Support/Relay`，支持 `RELAY_DATA_DIR`。
 
 输入草稿只保留在当前窗口。普通对话可直接发送并连接本地 Codex；模型和执行权限由 Harness 提供。资料单条最多 12,000 字符，选用资料及指令合计最多 32,000 字符，下一条消息生效。自动划词浮现、截图问答、持续视觉、更多 Harness 和外部原生 session 续聊仍待开发。
 
@@ -45,7 +45,7 @@ cargo xtask start
 
 `bundle` 签名优先级为 `RELAY_SIGNING_IDENTITY` → 仓库根目录的 `.relay-signing-identity` → 已有 `dist/Relay.app` 的签名身份；均未配置时才使用 ad-hoc，重编译可能导致系统隐私授权失效，包括辅助功能、麦克风与文稿目录。`.relay-signing-identity` 保存证书名称或 SHA-1，已被 Git 忽略。已有开发者签名会自动沿用，签名失败不会退回 ad-hoc；也可显式设置 `RELAY_SIGNING_IDENTITY=-`。首次从 ad-hoc 切换到稳定证书仍可能需要重新授权。
 
-原生机制的真实 Harness 检查可运行 `cargo run -p relay-runtime --example native_probe --locked -- --execute`。它使用临时 Relay 数据目录和当前本地 Codex 登录，验证记忆工具、异步任务回收与 observer 提炼，会使用模型额度。历史导入只读检查使用 `client_sessions_probe`，不调用模型。
+真实 Claude-Mem 验证使用隔离 Worker 和合成会话，覆盖手动观察、生命周期提炼、总结、检索和上下文；命令见 [验证说明](docs/MEMORY-PROVIDERS.md#验证)。历史归档只读检查仍使用 `client_sessions_probe`，不调用模型。
 
 `cargo xtask bundle --release` 生成发布优化的本地应用包。开发检查器由 `devtools` feature 控制；无开发工具的构建可使用 `cargo build -p relay --release --no-default-features --locked`。
 
@@ -53,11 +53,11 @@ cargo xtask start
 
 | 文档 | 内容 |
 | --- | --- |
+| [Memory Provider](docs/MEMORY-PROVIDERS.md) | 顶层抽象、Claude-Mem 接入、配置、故障恢复和迁移边界 |
 | [产品规格](docs/PRODUCT.md) | 持续主对话、任务、记忆、桌面入口和当前范围 |
 | [技术架构](docs/ARCHITECTURE.md) | Rust 包边界、ACP、调度、恢复与上下文 |
-| [常驻 Agent 与原生记忆](docs/NATIVE-MEMORY.md) | claude-mem 参考、SQLite、提炼队列、检索、主题和迁移 |
 | [上下文与缓存](docs/CONTEXT-CACHING.md) | 资料快照、增量、异常恢复和用量口径 |
-| [会话归档与记忆入口](docs/CLIENT-SESSIONS.md) | 后台归档、提炼状态、记忆审核与来源查看 |
+| [会话归档与记忆入口](docs/CLIENT-SESSIONS.md) | 后台归档、显式历史导入与观察记录 |
 | [快捷入口](docs/QUICK-ENTRY.md) | 选区、小窗、网页上下文与语音 |
 | [个人文件](docs/PERSONAL-FILES.md) | 独立文件空间、编辑、预览和冲突检测 |
 | [Codex 接入](docs/CODEX.md) | 本地安装、适配器、登录和模型 |
