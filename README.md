@@ -10,7 +10,7 @@ Relay 是 Rust / GPUI Kit 原生桌面应用，通过 ACP 连接本地 Codex。�
 
 - 首页、全局快捷入口、语音默认进入同一主对话；打开任务或显式选择任务后，输入进入该任务。话题变化不自动切换 thread。
 - 主 Agent 使用 `create_task` / `continue_task` / `inspect_task` 调度；后台持久队列派发，结果回到主对话，活动页展示等待、进度、待检查和失败状态。
-- 原生记忆参考 claude-mem 的事件采集、后台 observation、来源版本和渐进检索，采用 Rust + SQLite/FTS5 + 本地 stdio MCP。
+- 原生记忆参考 claude-mem 的工具事件采集、连续 observation、会话总结、恢复上下文和渐进检索，采用 Rust + SQLite/FTS5/向量索引 + 本地 stdio MCP；Embedding 支持 OpenAI 兼容服务。
 - 记忆页面展示导入与提炼状态、候选和已确认记录、主题标签及来源；支持确认、修订、遗忘和失败重试。
 - 历史 Codex session 在后台只读归档，从来源查看原始会话；旧“本地会话”Tab 和手动归属已移除。主题标签不改变会话身份或消息目标。
 - 本地 Codex 发现、认证、真实流式对话、工具权限、模型配置、取消和原生 session 恢复。更多 Harness 待接入。

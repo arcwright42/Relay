@@ -118,17 +118,17 @@ impl NativeStore {
                     .collect::<Vec<_>>()
             )
             .to_string();
-            keys.extend(
-                self.ingest_fragments(
-                    &format!("{origin}:episode:{first}"),
-                    None,
-                    &origin,
-                    title,
-                    &text,
-                )?
-                .into_iter()
-                .map(|(key, _)| key),
-            );
+            let fragments = self.ingest_fragments(
+                &format!("{origin}:episode:{first}"),
+                None,
+                &origin,
+                title,
+                &text,
+            )?;
+            for (key, source) in fragments {
+                keys.insert(key);
+                self.queue_summary(source)?;
+            }
         }
         self.retire_missing(&origin, &keys)
     }

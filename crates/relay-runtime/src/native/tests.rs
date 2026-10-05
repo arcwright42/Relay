@@ -1,7 +1,9 @@
 use super::*;
-struct Sandbox {
-    root: PathBuf,
-    store: NativeStore,
+mod alignment;
+mod migration_v2;
+pub(super) struct Sandbox {
+    pub(super) root: PathBuf,
+    pub(super) store: NativeStore,
 }
 
 #[test]
@@ -236,7 +238,7 @@ fn memory_source_reader_pages_full_text_and_keeps_original_archive_identity() {
     assert!(MemoryService::source(&s.store, source, 0).is_err());
 }
 impl Sandbox {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = std::env::temp_dir().join(format!("relay-native-test-{}", uuid::Uuid::new_v4()));
         let store = NativeStore::open(root.clone()).unwrap();
         Self { root, store }
@@ -247,7 +249,7 @@ impl Drop for Sandbox {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
-fn note(source: u64, body: &str) -> Value {
+pub(super) fn note(source: u64, body: &str) -> Value {
     json!({"title":"Relay 记忆方案","body":body,"kind":"decision","scope":null,"status":"confirmed","sources":[{"source_id":source,"revision":1}],"topics":["Relay","记忆"]})
 }
 
@@ -578,6 +580,9 @@ fn topics_collect_multiple_sessions_without_changing_their_identity() {
                 )],
             )
             .unwrap();
+        let checkpoint = s.store.claim_job().unwrap().unwrap();
+        assert_eq!(checkpoint["kind"], "summary");
+        s.store.commit_extraction(checkpoint["job_id"].as_u64().unwrap(),checkpoint["attempt"].as_u64().unwrap(),&[],Some(&json!({"request":"choose storage","investigated":"SQLite","learned":"SQLite persistence","completed":"choice recorded","next_steps":"","notes":""}))).unwrap();
     }
     let topics = s
         .store
@@ -896,7 +901,10 @@ fn durable_transcripts_repair_a_missed_capture_once_and_keep_tool_evidence() {
         .unwrap()
         .query_row("SELECT count(*) FROM jobs", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(
+        count, 3,
+        "One tool observation, one turn observation and one summary checkpoint"
+    );
 }
 
 #[test]

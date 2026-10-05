@@ -315,6 +315,17 @@ fn main() {
         std::process::exit(2);
     }
     let directory = AgentRuntime::default_directory();
+    match relay_runtime::native::run_memory_cli(
+        &directory,
+        &std::env::args().skip(1).collect::<Vec<_>>(),
+    ) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+    }
     if voice_cli::run(&directory) {
         return;
     }

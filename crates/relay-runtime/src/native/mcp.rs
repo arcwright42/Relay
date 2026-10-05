@@ -68,28 +68,48 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})
 }
 fn note_schema() -> Value {
-    json!({"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"kind":{"type":"string","enum":["fact","decision","preference","working","observation","summary"]},"scope":{"type":["integer","null"]},"status":{"type":"string","enum":["candidate","confirmed"]},"sources":{"type":"array","items":{"type":"object","properties":{"source_id":{"type":"integer"},"revision":{"type":"integer"}},"required":["source_id","revision"]}},"supersedes":{"type":["integer","null"]},"topics":{"type":"array","items":{"type":"string"}}},"required":["title","body"]})
+    let mut schema = json!({"type":"object","properties":{"title":{"type":"string"},"body":{"type":"string"},"kind":{"type":"string","enum":["fact","decision","preference","working","observation","summary"]},"scope":{"type":["integer","null"]},"status":{"type":"string","enum":["candidate","confirmed"]},"sources":{"type":"array","items":{"type":"object","properties":{"source_id":{"type":"integer"},"revision":{"type":"integer"}},"required":["source_id","revision"]}},"supersedes":{"type":["integer","null"]},"topics":{"type":"array","items":{"type":"string"}}},"required":["title","body"]});
+    for name in ["facts", "concepts", "files_read", "files_modified"] {
+        schema["properties"][name] =
+            json!({"type":"array","items":{"type":"string"},"maxItems":32});
+    }
+    schema
+}
+fn summary_schema() -> Value {
+    let fields = [
+        "request",
+        "investigated",
+        "learned",
+        "completed",
+        "next_steps",
+        "notes",
+    ];
+    let properties = fields
+        .iter()
+        .map(|s| ((*s).to_owned(), json!({"type":"string","maxLength":1800})))
+        .collect::<serde_json::Map<_, _>>();
+    json!({"type":"object","properties":properties,"required":fields,"additionalProperties":false})
 }
 fn tool_list(caller: ThreadId) -> Vec<Value> {
     if caller == OBSERVER {
         return vec![tool(
             "memory_commit_job",
-            "Atomically save candidate observations and acknowledge this leased extraction job. Empty notes is valid.",
-            json!({"job_id":{"type":"integer"},"attempt":{"type":"integer"},"notes":{"type":"array","items":note_schema()}}),
-            &["job_id", "attempt", "notes"],
+            "Atomically acknowledge a leased job. Observation jobs return notes (empty is valid); summary jobs return the six-field session summary. Never substitute observations for a summary checkpoint.",
+            json!({"job_id":{"type":"integer"},"attempt":{"type":"integer"},"notes":{"type":"array","items":note_schema()},"summary":summary_schema()}),
+            &["job_id", "attempt"],
         )];
     }
     let mut tools = vec![
         tool(
             "memory_search",
-            "Find a compact memory index. Candidate notes are unverified. Use timeline/get for evidence; use sources=true to search raw archived history.",
-            json!({"query":{"type":"string"},"sources":{"type":"boolean"}}),
+            "Find a compact hybrid semantic/keyword index. Returns results plus retrieval mode and any degradation warning. Candidates are unverified. Search first, inspect neighboring evidence with timeline, then batch memory_get only the IDs you need. sources=true searches raw evidence by keywords.",
+            json!({"query":{"type":"string"},"sources":{"type":"boolean"},"kind":{"type":"string"},"topic":{"type":"string"},"session":{"type":"string"}}),
             &["query"],
         ),
         tool(
             "memory_get",
-            "Read selected memory details and source references, at most 10 IDs.",
-            json!({"ids":{"type":"array","items":{"type":"integer"}}}),
+            "Read selected memory details and source references, at most 10 IDs. Evidence is paged in groups of 32; use next_evidence_offset to continue.",
+            json!({"ids":{"type":"array","items":{"type":"integer"}},"evidence_offset":{"type":"integer","minimum":0}}),
             &["ids"],
         ),
         tool(
@@ -166,10 +186,15 @@ impl NativeStore {
                 .with_context(|| format!("{key} required"))
         };
         match name {
-            "memory_search" => self.search(
+            "memory_search" => self.search_report(
                 caller,
                 text("query")?,
                 args["sources"].as_bool().unwrap_or(false),
+                &super::retrieval::SearchFilter {
+                    kind: args["kind"].as_str().unwrap_or("").to_owned(),
+                    topic: args["topic"].as_str().unwrap_or("").to_lowercase(),
+                    session: args["session"].as_str().unwrap_or("").to_owned(),
+                },
             ),
             "memory_get" => {
                 let ids = args["ids"]
@@ -178,7 +203,11 @@ impl NativeStore {
                     .iter()
                     .map(|v| v.as_u64().context("Invalid ID"))
                     .collect::<Result<Vec<_>>>()?;
-                self.get_memory(caller, &ids)
+                if let Some(offset) = args["evidence_offset"].as_u64() {
+                    self.get_memory_page(caller, &ids, offset)
+                } else {
+                    self.get_memory(caller, &ids)
+                }
             }
             "memory_timeline" => self.timeline(caller, id("source_id")?),
             "memory_source" => self.read_source(
@@ -196,14 +225,20 @@ impl NativeStore {
                 Ok(json!({"forgotten":true}))
             }
             "memory_commit_job" => {
-                self.commit_job(
+                ensure!(
+                    args["notes"].is_array() ^ args["summary"].is_object(),
+                    "Return either observations or a session summary"
+                );
+                self.commit_extraction(
                     id("job_id")?,
                     id("attempt")?,
-                    args["notes"].as_array().context("notes required")?,
+                    args["notes"].as_array().map(Vec::as_slice).unwrap_or(&[]),
+                    args.get("summary"),
                 )?;
                 Ok(json!({"committed":true}))
             }
             "memory_status" => {
+                let embeddings = self.embedding_status()?;
                 let db = self.db.lock().expect("native store");
                 let mut stmt = db.prepare("SELECT state,count(*) FROM jobs GROUP BY state")?;
                 let jobs = stmt
@@ -214,7 +249,7 @@ impl NativeStore {
                 let settings = stmt
                     .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?
                     .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
-                Ok(json!({"jobs":jobs,"settings":settings}))
+                Ok(json!({"jobs":jobs,"settings":settings,"embeddings":embeddings}))
             }
             "memory_settings" => {
                 let enabled = args["enabled"].as_bool().context("enabled required")?;

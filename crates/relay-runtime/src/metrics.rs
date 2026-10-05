@@ -1,7 +1,7 @@
 use relay_core::agents::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct SavedMetrics {
     model: Option<String>,
     first_text_ms: Option<u64>,
@@ -14,7 +14,7 @@ pub(crate) struct SavedMetrics {
     outcome: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct SavedUsage {
     input_tokens: u64,
     output_tokens: u64,

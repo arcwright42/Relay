@@ -111,6 +111,32 @@ impl MemoryView {
                 .text_size(px(12.)),
             )
             .child(
+                muted(format!(
+                    "{}: {} · {}",
+                    self.text(Text::MemoryCheckpoints),
+                    progress.session_summaries,
+                    progress
+                        .embedding_model
+                        .as_ref()
+                        .map(|model| format!(
+                            "{} ({model}): {} / {}",
+                            self.text(Text::MemorySemanticIndex),
+                            progress.embedding_indexed,
+                            progress.embedding_indexed
+                                + progress.embedding_pending
+                                + progress.embedding_failed
+                        ))
+                        .unwrap_or_else(|| self.text(Text::MemoryLexicalOnly).to_string())
+                ))
+                .text_size(px(12.)),
+            )
+            .children(
+                progress
+                    .embedding_error
+                    .as_ref()
+                    .map(|error| muted(error.clone()).text_size(px(12.))),
+            )
+            .child(
                 row().gap(px(8.)).children(
                     [
                         (Text::MemorySources, progress.sources),
@@ -733,7 +759,10 @@ impl Render for MemoryView {
                             Button::new("memory-retry")
                                 .outline()
                                 .small()
-                                .disabled(busy || self.overview.progress.failed == 0)
+                                .disabled(
+                                    busy || (self.overview.progress.failed == 0
+                                        && self.overview.progress.embedding_error.is_none()),
+                                )
                                 .label(self.text(Text::MemoryRetry))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.command(MemoryCommand::RetryFailed, window, cx)

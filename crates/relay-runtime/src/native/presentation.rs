@@ -43,11 +43,21 @@ impl NativeStore {
             query.text.chars().count() <= 400,
             "Search is limited to 400 characters"
         );
+        let embedding = self.embedding_status()?;
         let mut db = self.db.lock().expect("native store");
         let tx = db.transaction()?;
         let count = |sql: &str| -> Result<u64> { Ok(tx.query_row(sql, [], |r| r.get(0))?) };
         let mut progress = MemoryProgress {
             observer_error: self.observer_error.lock().expect("observer health").clone(),
+            session_summaries: count(
+                "SELECT count(*) FROM session_summaries c JOIN memories m ON m.id=c.memory_id WHERE m.status IN ('candidate','confirmed')",
+            )?,
+            embedding_model: embedding["model"].as_str().map(str::to_owned),
+            embedding_indexed: embedding["jobs"]["done"].as_u64().unwrap_or(0),
+            embedding_failed: embedding["jobs"]["failed"].as_u64().unwrap_or(0),
+            embedding_pending: embedding["jobs"]["pending"].as_u64().unwrap_or(0)
+                + embedding["jobs"]["running"].as_u64().unwrap_or(0),
+            embedding_error: embedding["error"].as_str().map(str::to_owned),
             sources: count("SELECT count(*) FROM sources WHERE forgotten=0 AND retired=0")?,
             sessions: count(
                 "SELECT count(DISTINCT CASE WHEN thread_id IS NULL THEN origin ELSE 'thread:'||thread_id END) FROM sources WHERE forgotten=0 AND retired=0",
@@ -90,7 +100,7 @@ impl NativeStore {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut stmt = tx.prepare("SELECT s.id,s.title,s.origin,coalesce(j.state,'recorded'),j.error FROM sources s LEFT JOIN jobs j ON j.source_id=s.id AND j.source_revision=s.revision WHERE s.forgotten=0 AND s.retired=0 AND (?1='' OR instr(lower(s.title),lower(?1))>0 OR instr(lower(s.body),lower(?1))>0) AND (?2 IS NULL OR EXISTS(SELECT 1 FROM evidence e JOIN memories m ON m.id=e.memory_id JOIN memory_topics mt ON mt.memory_id=m.id JOIN topics t ON t.id=mt.topic_id WHERE e.source_id=s.id AND e.source_revision=s.revision AND m.status IN ('candidate','confirmed') AND t.name=?2)) AND (?3 IS NULL OR s.id<?3) ORDER BY s.id DESC LIMIT 26")?;
+        let mut stmt = tx.prepare("SELECT s.id,s.title,s.origin,coalesce(j.state,'recorded'),j.error FROM sources s LEFT JOIN jobs j ON j.source_id=s.id AND j.source_revision=s.revision AND j.kind='observation' WHERE s.forgotten=0 AND s.retired=0 AND (?1='' OR instr(lower(s.title),lower(?1))>0 OR instr(lower(s.body),lower(?1))>0) AND (?2 IS NULL OR EXISTS(SELECT 1 FROM evidence e JOIN memories m ON m.id=e.memory_id JOIN memory_topics mt ON mt.memory_id=m.id JOIN topics t ON t.id=mt.topic_id WHERE e.source_id=s.id AND e.source_revision=s.revision AND m.status IN ('candidate','confirmed') AND t.name=?2)) AND (?3 IS NULL OR s.id<?3) ORDER BY s.id DESC LIMIT 26")?;
         let mut sources = stmt
             .query_map(
                 params![text, query.topic, query.before_source],
@@ -144,7 +154,7 @@ impl NativeStore {
 
     fn memory_source_page(&self, id: u64, offset: usize) -> Result<MemorySourcePage> {
         let db = self.db.lock().expect("native store");
-        let source = db.query_row("SELECT s.id,s.title,s.origin,coalesce(j.state,'recorded'),j.error FROM sources s LEFT JOIN jobs j ON j.source_id=s.id AND j.source_revision=s.revision WHERE s.id=? AND s.forgotten=0 AND s.retired=0",[id],source_entry).context("Source was withdrawn or forgotten")?;
+        let source = db.query_row("SELECT s.id,s.title,s.origin,coalesce(j.state,'recorded'),j.error FROM sources s LEFT JOIN jobs j ON j.source_id=s.id AND j.source_revision=s.revision AND j.kind='observation' WHERE s.id=? AND s.forgotten=0 AND s.retired=0",[id],source_entry).context("Source was withdrawn or forgotten")?;
         let (body, revision): (String, u64) =
             db.query_row("SELECT body,revision FROM sources WHERE id=?", [id], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -180,15 +190,33 @@ impl NativeStore {
                 )?;
             }
             MemoryCommand::RetryFailed => {
-                self.db.lock().expect("native store").execute("UPDATE jobs SET state='pending',attempts=0,error=NULL,lease_until=NULL WHERE state='failed' AND EXISTS(SELECT 1 FROM sources s WHERE s.id=source_id AND s.revision=source_revision AND s.forgotten=0 AND s.retired=0)",[])?;
+                self.retry_embeddings()?;
+                self.db.lock().expect("native store").execute("UPDATE jobs SET state='pending',retry_attempts=0,error=NULL,lease_until=NULL WHERE state='failed' AND EXISTS(SELECT 1 FROM sources s WHERE s.id=source_id AND s.revision=source_revision AND s.forgotten=0 AND s.retired=0)",[])?;
             }
             MemoryCommand::Confirm(id) | MemoryCommand::Revise { id, .. } => {
                 let mut db = self.db.lock().expect("native store");
                 let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let mut note = tx.query_row("SELECT title,body,kind,scope FROM memories WHERE id=? AND status IN ('candidate','confirmed')",[id],|r| Ok(json!({"title":r.get::<_,String>(0)?,"body":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"scope":r.get::<_,Option<u64>>(3)?,"status":"confirmed","supersedes":id}))).context("Memory changed; reopen its current version")?;
+                let attributes: String =
+                    tx.query_row("SELECT attributes FROM memories WHERE id=?", [id], |r| {
+                        r.get(0)
+                    })?;
+                let attributes: Value = serde_json::from_str(&attributes)?;
+                for (key, value) in attributes
+                    .as_object()
+                    .context("Invalid observation metadata")?
+                {
+                    note[key] = value.clone();
+                }
+                let revised = matches!(&command, MemoryCommand::Revise { .. });
                 if let MemoryCommand::Revise { title, body, .. } = command {
                     note["title"] = json!(title);
                     note["body"] = json!(body);
+                    // A free-form human correction becomes an observation; do not
+                    // present the old structured checkpoint as its new content.
+                    if note["kind"] == "summary" {
+                        note["kind"] = json!("observation");
+                    }
                 }
                 let mut stmt =
                     tx.prepare("SELECT source_id,source_revision FROM evidence WHERE memory_id=?")?;
@@ -206,6 +234,10 @@ impl NativeStore {
                 );
                 drop(stmt);
                 let new_id = super::memory::insert_note(&tx, MAIN, &note, None)?;
+                tx.execute("INSERT OR IGNORE INTO memory_dependencies SELECT ?1,depends_on FROM memory_dependencies WHERE memory_id=?2",params![new_id,id])?;
+                if !revised {
+                    tx.execute("INSERT INTO session_summaries SELECT ?1,session_key,through_source_id,fields FROM session_summaries WHERE memory_id=?2",params![new_id,id])?;
+                }
                 tx.commit()?;
                 return Ok(Some(new_id));
             }
