@@ -1,7 +1,7 @@
 use super::*;
 use gpui_kit::component::{Selectable, popover::Popover};
 use relay_core::{
-    ProjectId,
+    ThreadId,
     capture::{FetchState, QuickAction, Selection, WebFetchService, compose},
 };
 
@@ -37,9 +37,9 @@ impl ResizeQuick {
     }
 }
 
-pub struct OpenProject(pub Option<ProjectId>);
-impl EventEmitter<OpenProject> for Workbench {}
-pub struct OpenAgentSettings(pub ProjectId);
+pub struct OpenThread(pub Option<ThreadId>);
+impl EventEmitter<OpenThread> for Workbench {}
+pub struct OpenAgentSettings(pub ThreadId);
 impl EventEmitter<OpenAgentSettings> for Workbench {}
 pub struct RequestAccessibility;
 impl EventEmitter<RequestAccessibility> for Workbench {}
@@ -60,12 +60,12 @@ pub(super) struct QuickEntry {
 }
 
 impl Workbench {
-    pub fn current_project(&self) -> Option<ProjectId> {
-        matches!(self.page, Page::Project(_))
+    pub fn current_thread(&self) -> Option<ThreadId> {
+        matches!(self.page, Page::Thread(_))
             .then(|| {
-                self.projects
-                    .get(self.selected_project)
-                    .map(|project| project.id)
+                self.threads
+                    .get(self.selected_thread)
+                    .map(|thread| thread.id)
             })
             .flatten()
     }
@@ -76,15 +76,10 @@ impl Workbench {
         }
     }
 
-    pub fn open_project(
-        &mut self,
-        project: ProjectId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.refresh_projects(window, cx);
-        if let Some(index) = self.projects.iter().position(|p| p.id == project) {
-            self.navigate(Page::Project(index), window, cx);
+    pub fn open_thread(&mut self, thread: ThreadId, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_threads(window, cx);
+        if let Some(index) = self.threads.iter().position(|p| p.id == thread) {
+            self.navigate(Page::Thread(index), window, cx);
             self.conversation_scroll.scroll_to_bottom();
         }
     }
@@ -140,8 +135,8 @@ impl Workbench {
                 draft.set_submit_on_enter(true, cx)
             });
         }
-        if !self.projects.is_empty() {
-            self.navigate(Page::Project(self.selected_project), window, cx);
+        if !self.threads.is_empty() {
+            self.navigate(Page::Thread(self.selected_thread), window, cx);
         }
         if let Some(url) = url {
             let task = cx
@@ -174,13 +169,13 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.projects.is_empty() {
+        if self.threads.is_empty() {
             return;
         }
-        if self.agent_states[self.selected_project].status.is_busy() {
+        if self.agent_states[self.selected_thread].status.is_busy() {
             return;
         }
-        let composing = self.drafts[self.selected_project].update(cx, |draft, cx| {
+        let composing = self.drafts[self.selected_thread].update(cx, |draft, cx| {
             EntityInputHandler::marked_text_range(draft, window, cx).is_some()
         });
         if composing {
@@ -192,7 +187,7 @@ impl Workbench {
         } else {
             quick.action.unwrap_or(action)
         };
-        let question = self.drafts[self.selected_project]
+        let question = self.drafts[self.selected_thread]
             .read(cx)
             .value()
             .to_string();
@@ -214,13 +209,13 @@ impl Workbench {
             )));
         }
         if missing_input {
-            let focus = self.drafts[self.selected_project].read(cx).focus_handle(cx);
+            let focus = self.drafts[self.selected_thread].read(cx).focus_handle(cx);
             window.activate_window();
             window.focus(&focus, cx);
             cx.notify();
             return;
         }
-        if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
+        if self.agent_states[self.selected_thread].status != ConnectionStatus::Ready {
             // Show connection controls in the result itself. An automatically
             // opened popover can obscure the selection and its error message.
             cx.notify();
@@ -228,7 +223,7 @@ impl Workbench {
         }
         let quick = self.quick.as_ref().unwrap();
         let first = !quick.sent;
-        let message_start = self.agent_states[self.selected_project].messages.len();
+        let message_start = self.agent_states[self.selected_thread].messages.len();
         let display_question = question.clone();
         let prompt = if quick.sent {
             question
@@ -255,7 +250,7 @@ impl Workbench {
             if !display_question.trim().is_empty() {
                 quick.questions.push((message_start, display_question));
             }
-            self.drafts[self.selected_project].update(cx, |draft, cx| {
+            self.drafts[self.selected_thread].update(cx, |draft, cx| {
                 draft.set_value("", window, cx);
                 draft.set_placeholder("继续提问", window, cx);
             });
@@ -268,10 +263,10 @@ impl Workbench {
     }
 
     fn quick_save(&mut self, cx: &mut Context<Self>) {
-        if self.projects.is_empty() {
+        if self.threads.is_empty() {
             return;
         }
-        let project = self.projects[self.selected_project].clone();
+        let thread = self.threads[self.selected_thread].clone();
         let quick = self.quick.as_mut().expect("quick view");
         if quick.saving {
             return;
@@ -286,11 +281,11 @@ impl Workbench {
         let name: String = quick.selection.text.chars().take(60).collect();
         let generation = quick.generation;
         quick.saving = true;
-        let service = self.project_service.clone();
+        let service = self.thread_service.clone();
         let task = cx.background_executor().spawn(async move {
-            service.apply(ProjectCommand::SaveContext {
-                project: project.id,
-                expected_revision: project.revision,
+            service.apply(ThreadCommand::SaveContext {
+                thread: thread.id,
+                expected_revision: thread.revision,
                 id: None,
                 name: if name.trim().is_empty() {
                     "Web selection".into()
@@ -333,7 +328,7 @@ impl Workbench {
                     .label(quick.translation_target)
                     .icon(IconName::ChevronDown)
                     .disabled(
-                        self.agent_states[self.selected_project].status != ConnectionStatus::Ready,
+                        self.agent_states[self.selected_thread].status != ConnectionStatus::Ready,
                     ),
             )
             .content(move |_, _, cx| {
@@ -372,8 +367,8 @@ impl Workbench {
                                         )
                                     );
                                     let start =
-                                        this.agent_states[this.selected_project].messages.len();
-                                    if this.agent_states[this.selected_project].status
+                                        this.agent_states[this.selected_thread].messages.len();
+                                    if this.agent_states[this.selected_thread].status
                                         == ConnectionStatus::Ready
                                         && this.agent_action(AgentCommand::Send(prompt), cx)
                                     {
@@ -393,7 +388,7 @@ impl Workbench {
     fn quick_input(&self, cx: &mut Context<Self>) -> Div {
         let status = self
             .agent_states
-            .get(self.selected_project)
+            .get(self.selected_thread)
             .map(|state| &state.status);
         let running = matches!(
             status,
@@ -412,10 +407,10 @@ impl Workbench {
             .bg(rgba(0xffffffbb))
             .border_1()
             .border_color(rgba(0x00000012))
-            .when(!self.projects.is_empty(), |view| {
+            .when(!self.threads.is_empty(), |view| {
                 view.child(
                     div().flex_1().min_w_0().child(
-                        Textarea::new(&self.drafts[self.selected_project])
+                        Textarea::new(&self.drafts[self.selected_thread])
                             .appearance(false)
                             .bordered(false)
                             .h(px(28.))
@@ -465,29 +460,29 @@ impl Workbench {
                     .small()
                     .size(px(28.))
                     .icon(icon(IconName::Ellipsis).size(px(16.)))
-                    .tooltip("项目与模型")
-                    .accessibility_label("项目与模型"),
+                    .tooltip(self.text(Text::ConversationAndModel))
+                    .accessibility_label(self.text(Text::ConversationAndModel)),
             )
             .content(move |_, _, cx| {
                 weak.update(cx, |this, cx| {
-                    let state = &this.agent_states[this.selected_project];
+                    let state = &this.agent_states[this.selected_thread];
                     let quick = this.quick.as_ref().unwrap();
                     column()
                         .w(px(270.))
                         .p(px(10.))
                         .gap(px(10.))
-                        .child(muted("项目").text_size(px(13.)))
-                        .children(this.projects.iter().enumerate().map(|(index, project)| {
-                            Button::new(("quick-result-project", index))
+                        .child(muted(this.text(Text::ConversationTarget)).text_size(px(13.)))
+                        .children(this.threads.iter().enumerate().map(|(index, thread)| {
+                            Button::new(("quick-result-thread", index))
                                 .ghost()
                                 .small()
                                 .justify_start()
-                                .label(project.name.clone())
-                                .selected(index == this.selected_project)
-                                // Once sent, this panel belongs to its project conversation.
+                                .label(thread.name.clone())
+                                .selected(index == this.selected_thread)
+                                // Once sent, this panel belongs to its thread conversation.
                                 .disabled(quick.sent || state.status.is_busy())
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.navigate(Page::Project(index), window, cx)
+                                    this.navigate(Page::Thread(index), window, cx)
                                 }))
                         }))
                         .child(
@@ -533,15 +528,15 @@ impl Workbench {
 
     pub(super) fn quick_view(&self, cx: &mut Context<Self>) -> Div {
         let quick = self.quick.as_ref().expect("quick view");
-        let has_project = !self.projects.is_empty();
-        let has_input = has_project
+        let has_thread = !self.threads.is_empty();
+        let has_input = has_thread
             && (!quick.selection.text.trim().is_empty()
-                || !self.drafts[self.selected_project]
+                || !self.drafts[self.selected_thread]
                     .read(cx)
                     .value()
                     .trim()
                     .is_empty());
-        let busy = has_project && self.agent_states[self.selected_project].status.is_busy();
+        let busy = has_thread && self.agent_states[self.selected_thread].status.is_busy();
         let close = Button::new("quick-close")
             .ghost()
             .small()
@@ -559,8 +554,8 @@ impl Workbench {
             .tooltip(self.text(Text::QuickExpand))
             .accessibility_label(self.text(Text::QuickExpand))
             .on_click(cx.listener(|this, _, window, cx| {
-                cx.emit(OpenProject(
-                    this.projects.get(this.selected_project).map(|p| p.id),
+                cx.emit(OpenThread(
+                    this.threads.get(this.selected_thread).map(|p| p.id),
                 ));
                 window.minimize_window();
             }));
@@ -608,7 +603,7 @@ impl Workbench {
                                     .ghost()
                                     .small()
                                     .label(self.text(label))
-                                    .disabled(!has_project || busy)
+                                    .disabled(!has_thread || busy)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.quick_send(action, window, cx)
                                     }))
@@ -650,14 +645,14 @@ impl Workbench {
                             .p(px(12.))
                             .gap(px(10.))
                             .child(row().gap(px(5.)).flex_wrap().children(
-                                self.projects.iter().enumerate().map(|(index, project)| {
-                                    Button::new(("quick-project", index))
+                                self.threads.iter().enumerate().map(|(index, thread)| {
+                                    Button::new(("quick-thread", index))
                                         .ghost()
                                         .small()
-                                        .label(project.name.clone())
-                                        .selected(index == self.selected_project)
+                                        .label(thread.name.clone())
+                                        .selected(index == self.selected_thread)
                                         .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.navigate(Page::Project(index), window, cx)
+                                            this.navigate(Page::Thread(index), window, cx)
                                         }))
                                 }),
                             ))
@@ -685,8 +680,8 @@ impl Workbench {
                                                 })),
                                         )
                                     })
-                                    .when(!has_project, |view| {
-                                        view.child(muted(self.text(Text::QuickNoProject)))
+                                    .when(!has_thread, |view| {
+                                        view.child(muted(self.text(Text::QuickNoThread)))
                                     })
                                     .when(quick.selection.text.is_empty(), |view| {
                                         view.child(
@@ -764,8 +759,8 @@ impl Workbench {
             .px(px(20.))
             .pb(px(12.))
             .gap(px(14.));
-        if has_project {
-            let state = &self.agent_states[self.selected_project];
+        if has_thread {
+            let state = &self.agent_states[self.selected_thread];
             for (index, message) in state
                 .messages
                 .iter()
@@ -885,7 +880,7 @@ impl Workbench {
                             })
                             .test_support(),
                     )
-                    .when(has_project, |view| view.child(self.quick_options(cx)))
+                    .when(has_thread, |view| view.child(self.quick_options(cx)))
                     .child(expand)
                     .child(close),
             )

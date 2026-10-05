@@ -1,49 +1,49 @@
 pub(super) mod editor;
 use super::*;
-use editor::{EditorMode, ProjectEditor};
-use relay_core::{ContextItem, ProjectId};
+use editor::{EditorMode, ThreadEditor};
+use relay_core::{ContextItem, ThreadId};
 use std::collections::BTreeMap;
 
 struct ContextLibrary {
     workbench: WeakEntity<Workbench>,
-    project: ProjectId,
+    thread: ThreadId,
 }
 
 impl Render for ContextLibrary {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.workbench
             .update(cx, |workbench, cx| {
-                workbench.context_library(self.project, cx)
+                workbench.context_library(self.thread, cx)
             })
             .unwrap_or_else(|_| column())
     }
 }
 
 impl Workbench {
-    pub(super) fn refresh_projects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_service.revision() == self.project_revision {
+    pub(super) fn refresh_threads(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.thread_service.revision() == self.thread_revision {
             return;
         }
-        let catalog = self.project_service.snapshot();
-        let selected = self.projects.get(self.selected_project).map(|p| p.id);
+        let catalog = self.thread_service.snapshot();
+        let selected = self.threads.get(self.selected_thread).map(|p| p.id);
         let mut drafts: BTreeMap<_, _> = self
-            .projects
+            .threads
             .iter()
             .map(|p| p.id)
             .zip(std::mem::take(&mut self.drafts))
             .collect();
         let mut errors: BTreeMap<_, _> = self
-            .projects
+            .threads
             .iter()
             .map(|p| p.id)
             .zip(std::mem::take(&mut self.agent_errors))
             .collect();
-        self.project_revision = catalog.revision;
-        self.project_error = catalog.error;
-        self.projects = catalog.projects;
+        self.thread_revision = catalog.revision;
+        self.thread_error = catalog.error;
+        self.threads = catalog.threads;
         let placeholder = self.text(Text::AskRelay);
-        for project in &self.projects {
-            let draft = drafts.remove(&project.id).unwrap_or_else(|| {
+        for thread in &self.threads {
+            let draft = drafts.remove(&thread.id).unwrap_or_else(|| {
                 let draft = cx.new(|cx| {
                     TextareaState::new(window, cx)
                         .placeholder(placeholder)
@@ -64,22 +64,22 @@ impl Workbench {
                 draft
             });
             self.drafts.push(draft);
-            self.agent_errors.push(errors.remove(&project.id).flatten());
+            self.agent_errors.push(errors.remove(&thread.id).flatten());
         }
-        self.selected_project = self
-            .projects
+        self.selected_thread = self
+            .threads
             .iter()
             .position(|p| Some(p.id) == selected)
             .unwrap_or(0);
-        if matches!(self.page, Page::Project(_)) {
-            self.page = if self.projects.is_empty() {
+        if matches!(self.page, Page::Thread(_)) {
+            self.page = if self.threads.is_empty() {
                 Page::Home
             } else {
-                Page::Project(self.selected_project)
+                Page::Thread(self.selected_thread)
             };
         }
         self.agent_states = self
-            .projects
+            .threads
             .iter()
             .map(|p| self.agent_service.snapshot(p.id))
             .collect();
@@ -87,23 +87,23 @@ impl Workbench {
         cx.notify();
     }
 
-    pub(super) fn edit_project(
+    pub(super) fn edit_thread(
         &mut self,
-        project: Option<Project>,
+        thread: Option<Thread>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_editor(EditorMode::Project(project), window, cx);
+        self.open_editor(EditorMode::Thread(thread), window, cx);
     }
 
     fn edit_note(
         &mut self,
-        project: Project,
+        thread: Thread,
         item: Option<ContextItem>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_editor(EditorMode::Note { project, item }, window, cx);
+        self.open_editor(EditorMode::Note { thread, item }, window, cx);
     }
 
     pub(super) fn open_editor(
@@ -114,15 +114,15 @@ impl Workbench {
     ) {
         let weak = cx.entity().downgrade();
         let editor = cx.new(|cx| {
-            ProjectEditor::new(
+            ThreadEditor::new(
                 mode,
                 self.settings_snapshot.language,
-                self.project_service.clone(),
+                self.thread_service.clone(),
                 Box::new(move |id, window, cx| {
                     let _ = weak.update(cx, |this, cx| {
-                        this.refresh_projects(window, cx);
-                        if let Some(index) = this.projects.iter().position(|p| p.id == id) {
-                            this.navigate(Page::Project(index), window, cx);
+                        this.refresh_threads(window, cx);
+                        if let Some(index) = this.threads.iter().position(|p| p.id == id) {
+                            this.navigate(Page::Thread(index), window, cx);
                         }
                     });
                 }),
@@ -146,14 +146,14 @@ impl Workbench {
     }
 
     pub(super) fn show_context(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(project) = self.projects.get(self.selected_project) else {
+        let Some(thread) = self.threads.get(self.selected_thread) else {
             return;
         };
-        let id = project.id;
+        let id = thread.id;
         let workbench = cx.entity().downgrade();
         let library = cx.new(|_| ContextLibrary {
             workbench,
-            project: id,
+            thread: id,
         });
         let title = self.text(Text::Context);
         window.open_dialog(cx, move |dialog, _, _| {
@@ -161,49 +161,49 @@ impl Workbench {
         });
     }
 
-    fn context_library(&self, id: ProjectId, cx: &mut Context<Self>) -> Div {
-        let Some(project) = self.projects.iter().find(|p| p.id == id) else {
+    fn context_library(&self, id: ThreadId, cx: &mut Context<Self>) -> Div {
+        let Some(thread) = self.threads.iter().find(|p| p.id == id) else {
             return column();
         };
-        let add_project = project.clone();
-        let edit_project = project.clone();
+        let add_thread = thread.clone();
+        let edit_thread = thread.clone();
         column()
             .gap(px(16.))
             .child(muted(self.text(Text::ContextIndependent)).text_size(px(13.)))
             .child(muted(self.text(Text::ContextSyncDetail)).text_size(px(13.)))
             .child(
-                Button::new("context-project-instructions")
+                Button::new("context-thread-instructions")
                     .outline()
                     .justify_start()
                     .icon(IconName::Settings)
-                    .label(self.text(Text::ProjectInstructions))
+                    .label(self.text(Text::ThreadInstructions))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.edit_project(Some(edit_project.clone()), window, cx)
+                        this.edit_thread(Some(edit_thread.clone()), window, cx)
                     })),
             )
             .child(
                 column()
-                    .id("project-context-list")
+                    .id("thread-context-list")
                     .max_h(px(340.))
                     .overflow_y_scroll()
                     .gap(px(8.))
-                    .when(project.context.is_empty(), |view| {
+                    .when(thread.context.is_empty(), |view| {
                         view.child(muted(self.text(Text::NoContext)).py(px(24.)))
                     })
-                    .children(project.context.iter().map(|item| {
+                    .children(thread.context.iter().map(|item| {
                         let note = item.clone();
-                        let editing_project = project.clone();
-                        let toggle = ProjectCommand::SaveContext {
-                            project: id,
-                            expected_revision: project.revision,
+                        let editing_thread = thread.clone();
+                        let toggle = ThreadCommand::SaveContext {
+                            thread: id,
+                            expected_revision: thread.revision,
                             id: Some(item.id),
                             name: item.name.clone(),
                             content: item.content.clone(),
                             included: !item.included,
                         };
-                        let remove = ProjectCommand::RemoveContext {
-                            project: id,
-                            expected_revision: project.revision,
+                        let remove = ThreadCommand::RemoveContext {
+                            thread: id,
+                            expected_revision: thread.revision,
                             id: item.id,
                         };
                         column()
@@ -237,9 +237,9 @@ impl Workbench {
                                             } else {
                                                 Text::NotIncluded
                                             }))
-                                            .disabled(self.project_saving)
+                                            .disabled(self.thread_saving)
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.apply_project_change(
+                                                this.apply_thread_change(
                                                     toggle.clone(),
                                                     false,
                                                     window,
@@ -254,7 +254,7 @@ impl Workbench {
                                             .label(self.text(Text::Edit))
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.edit_note(
-                                                    editing_project.clone(),
+                                                    editing_thread.clone(),
                                                     Some(note.clone()),
                                                     window,
                                                     cx,
@@ -266,7 +266,7 @@ impl Workbench {
                                             .ghost()
                                             .small()
                                             .label(self.text(Text::Remove))
-                                            .disabled(self.project_saving)
+                                            .disabled(self.thread_saving)
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.confirm_remove(remove.clone(), window, cx)
                                             })),
@@ -284,14 +284,14 @@ impl Workbench {
                     .icon(IconName::Plus)
                     .label(self.text(Text::AddNote))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.edit_note(add_project.clone(), None, window, cx)
+                        this.edit_note(add_thread.clone(), None, window, cx)
                     })),
             )
     }
 
     pub(super) fn confirm_remove(
         &self,
-        command: ProjectCommand,
+        command: ThreadCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -309,7 +309,7 @@ impl Workbench {
                 .overlay_closable(false)
                 .on_cancel(move |_, _, cx| {
                     cancelling
-                        .update(cx, |this, _| !this.project_saving)
+                        .update(cx, |this, _| !this.thread_saving)
                         .unwrap_or(true)
                 })
                 .child(muted(language.text(Text::RemoveNoteDetail)))
@@ -323,7 +323,7 @@ impl Workbench {
                                 .label(language.text(Text::Cancel))
                                 .on_click(move |_, window, cx| {
                                     if cancel_button
-                                        .update(cx, |this, _| !this.project_saving)
+                                        .update(cx, |this, _| !this.thread_saving)
                                         .unwrap_or(true)
                                     {
                                         window.close_dialog(cx);
@@ -336,7 +336,7 @@ impl Workbench {
                                 .label(language.text(Text::Remove))
                                 .on_click(move |_, window, cx| {
                                     let _ = weak.update(cx, |this, cx| {
-                                        this.apply_project_change(command.clone(), true, window, cx)
+                                        this.apply_thread_change(command.clone(), true, window, cx)
                                     });
                                 }),
                         ),
@@ -344,33 +344,33 @@ impl Workbench {
         });
     }
 
-    fn apply_project_change(
+    fn apply_thread_change(
         &mut self,
-        command: ProjectCommand,
+        command: ThreadCommand,
         close: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.project_saving {
+        if self.thread_saving {
             return;
         }
-        self.project_saving = true;
-        let service = self.project_service.clone();
+        self.thread_saving = true;
+        let service = self.thread_service.clone();
         let task = cx
             .background_executor()
             .spawn(async move { service.apply(command) });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
             let _ = this.update_in(cx, |this, window, cx| {
-                this.project_saving = false;
+                this.thread_saving = false;
                 match result {
                     Ok(_) => {
-                        this.refresh_projects(window, cx);
+                        this.refresh_threads(window, cx);
                         if close {
                             window.close_dialog(cx);
                         }
                     }
-                    Err(error) => explain(this.text(Text::ProjectSaveError), error, window, cx),
+                    Err(error) => explain(this.text(Text::ThreadSaveError), error, window, cx),
                 }
                 cx.notify();
             });

@@ -1,6 +1,6 @@
 [package]
 name = "relay-runtime"
-description = "Local agent connections, native client sessions, and project persistence"
+description = "Resident agent coordination, native client sessions, and provenance-backed memory"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ test-support = ["relay-acp/test-support"]
 
 [dependencies]
 anyhow.workspace = true
+rusqlite.workspace = true
 dotenvy.workspace = true
 relay-core.workspace = true
 relay-acp.workspace = true

@@ -1,4 +1,4 @@
-//! DashScope adapters only: no microphone, Jev decisions, GPUI or Agent ownership.
+//! DashScope adapters only: no microphone, task decisions, GPUI or Agent ownership.
 mod asr;
 mod config;
 #[cfg(test)]

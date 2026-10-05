@@ -1,4 +1,4 @@
-//! Explicit network smoke check against a supplied public URL; never reads project data.
+//! Explicit network smoke check against a supplied public URL; never reads thread data.
 use relay_core::capture::WebFetchService;
 use relay_runtime::{AgentRuntime, MoliFetcher};
 fn main() -> Result<(), String> {

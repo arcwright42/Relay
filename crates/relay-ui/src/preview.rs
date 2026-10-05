@@ -1,11 +1,11 @@
-//! Navigation destinations. Project data comes from the project service.
+//! Navigation destinations. Thread data comes from the thread service.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
     Inbox,
-    Sessions,
+    Memory,
     Files,
-    Project(usize),
+    Thread(usize),
     Agents,
     Settings,
 }

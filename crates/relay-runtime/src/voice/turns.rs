@@ -1,4 +1,4 @@
-//! One spoken utterance becomes one routed prompt; all callbacks carry a turn identity.
+//! One spoken utterance becomes one main-room prompt; all callbacks carry a turn identity.
 use relay_core::{settings::SettingsService, voice::*};
 use std::{
     sync::{
@@ -86,9 +86,7 @@ impl State {
             stage: VoiceTurnStage::Transcribing,
             prompt: String::new(),
             response: String::new(),
-            project: None,
-            choices: vec![],
-            catalog_revision: None,
+            thread: None,
             error: None,
         });
         session.pending_segments = 1;
@@ -110,7 +108,6 @@ impl State {
             if let Some(turn) = &mut session.turn {
                 turn.stage = VoiceTurnStage::Complete;
                 turn.error = None;
-                turn.choices.clear();
             }
         }
         self.pause(false);
@@ -119,10 +116,6 @@ impl State {
 
 pub(super) enum VoiceJobKind {
     Audio(SpeechAudio),
-    Prompt {
-        text: String,
-        selection: VoiceRouteSelection,
-    },
 }
 pub(super) struct VoiceJob {
     pub generation: u64,
@@ -144,60 +137,6 @@ pub(super) struct Shared {
     pub settings: Arc<dyn SettingsService>,
 }
 impl Shared {
-    pub fn choose_project(
-        &self,
-        session_id: u64,
-        turn_id: u64,
-        target: relay_core::routing::RouteTarget,
-    ) {
-        let mut state = self.state.lock().expect("voice lock");
-        let Some(session) = state
-            .view
-            .session
-            .as_mut()
-            .filter(|session| session.id == session_id)
-        else {
-            return;
-        };
-        let Some(turn) = session
-            .turn
-            .as_mut()
-            .filter(|turn| turn.id == turn_id && turn.stage == VoiceTurnStage::ChoosingProject)
-        else {
-            return;
-        };
-        if !turn.choices.iter().any(|choice| choice.target == target) {
-            return;
-        }
-        let Some(catalog_revision) = turn.catalog_revision else {
-            return;
-        };
-        let text = turn.prompt.clone();
-        turn.choices.clear();
-        turn.stage = VoiceTurnStage::Routing;
-        let Some(cancelled) = state.turn_cancelled.clone() else {
-            return;
-        };
-        let Some(control) = state.control.clone() else {
-            return;
-        };
-        let job = VoiceJob {
-            generation: state.generation,
-            session_id,
-            turn_id,
-            cancelled,
-            control,
-            strip_wake: false,
-            kind: VoiceJobKind::Prompt {
-                text,
-                selection: VoiceRouteSelection {
-                    target,
-                    catalog_revision,
-                },
-            },
-        };
-        self.enqueue(&mut state, job);
-    }
     pub fn current(&self, generation: u64) -> bool {
         let state = self.state.lock().expect("voice lock");
         state.generation == generation && state.view.enabled
@@ -352,12 +291,7 @@ impl Shared {
             session.pending_segments = 0;
             let turn = session.turn.as_mut().unwrap();
             match result {
-                Ok(Some((revision, choices))) => {
-                    turn.stage = VoiceTurnStage::ChoosingProject;
-                    turn.catalog_revision = Some(revision);
-                    turn.choices = choices;
-                }
-                Ok(None) => {
+                Ok(()) => {
                     turn.stage = VoiceTurnStage::Complete;
                     state.pause(false);
                 }
@@ -372,24 +306,19 @@ impl Shared {
             }
         });
     }
-    fn process(
-        &self,
-        job: &VoiceJob,
-    ) -> Result<Option<(u64, Vec<VoiceRouteChoice>)>, VoiceTurnError> {
-        let (prompt, selection) = match &job.kind {
+    fn process(&self, job: &VoiceJob) -> Result<(), VoiceTurnError> {
+        let prompt = match &job.kind {
             VoiceJobKind::Audio(audio) => {
                 let text = self
                     .transcriber
                     .transcribe(audio, &job.cancelled)
                     .map_err(VoiceTurnError::Transcription)?;
-                let text = if job.strip_wake {
+                if job.strip_wake {
                     strip_wake_prefix(&text)
                 } else {
                     text.trim().to_owned()
-                };
-                (text, None)
+                }
             }
-            VoiceJobKind::Prompt { text, selection } => (text.clone(), Some(*selection)),
         };
         if !self.update(job, |state| {
             let session = state.view.session.as_mut().unwrap();
@@ -418,17 +347,17 @@ impl Shared {
             return Err(VoiceTurnError::Cancelled);
         }
         if prompt.is_empty() {
-            return Ok(None);
+            return Ok(());
         }
         let Some(dialogue) = &self.dialogue else {
-            return Ok(None);
+            return Ok(());
         };
-        let result = dialogue.respond(&prompt, selection, &job.cancelled, &|progress| {
+        let result = dialogue.respond(&prompt, &job.cancelled, &|progress| {
             self.update(job, |state| {
                 let turn = state.view.session.as_mut().unwrap().turn.as_mut().unwrap();
                 match progress {
                     VoicePromptProgress::Stage(stage) => turn.stage = stage,
-                    VoicePromptProgress::Project(project) => turn.project = Some(project),
+                    VoicePromptProgress::Thread(thread) => turn.thread = Some(thread),
                     VoicePromptProgress::Response(text) => turn.response = text,
                 }
             });
@@ -437,10 +366,6 @@ impl Shared {
             return Err(VoiceTurnError::Cancelled);
         }
         match result {
-            VoicePromptResult::ChooseProject {
-                catalog_revision,
-                choices,
-            } => Ok(Some((catalog_revision, choices))),
             VoicePromptResult::Reply(text) => {
                 if !self.update(job, |state| {
                     state
@@ -477,7 +402,7 @@ impl Shared {
                     job.control.speaking.store(false, Ordering::Release);
                     result.map_err(VoiceTurnError::SpeechOutput)?;
                 }
-                Ok(None)
+                Ok(())
             }
         }
     }

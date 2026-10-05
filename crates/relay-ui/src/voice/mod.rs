@@ -4,7 +4,7 @@ mod presentation;
 mod tests;
 
 use crate::{
-    OpenProject,
+    OpenThread,
     i18n::{Text, Translate},
 };
 use gpui_kit::{
@@ -83,7 +83,7 @@ impl VoicePanel {
         window.remove_window();
     }
 }
-impl EventEmitter<OpenProject> for VoicePanel {}
+impl EventEmitter<OpenThread> for VoicePanel {}
 
 impl Render for VoicePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -228,49 +228,22 @@ impl Render for VoicePanel {
                                     .child(turn.response.clone()),
                             )
                         },
-                    )
-                    .when_some(
-                        turn.filter(|turn| turn.stage == VoiceTurnStage::ChoosingProject),
-                        |view, turn| {
-                            let turn_id = turn.id;
-                            view.children(turn.choices.iter().enumerate().map(|(index, choice)| {
-                                let target = choice.target;
-                                Button::new(("voice-choose-project", index))
-                                    .outline()
-                                    .w_full()
-                                    .label(
-                                        choice
-                                            .project_name
-                                            .clone()
-                                            .unwrap_or_else(|| text(Text::NewProject).to_owned()),
-                                    )
-                                    .on_click(cx.listener(move |this, _, _, _| {
-                                        this.service.choose_project(
-                                            this.session_id,
-                                            turn_id,
-                                            target,
-                                        )
-                                    }))
-                            }))
-                        },
                     ),
             )
             .when_some(
-                turn.and_then(|turn| turn.project.as_ref()),
-                |view, project| {
-                    let project_id = project.id;
+                turn.and_then(|turn| turn.thread.as_ref()),
+                |view, thread| {
+                    let thread_id = thread.id;
                     view.child(
-                        Button::new("voice-open-project")
+                        Button::new("voice-open-thread")
                             .ghost()
                             .small()
-                            .label(format!(
-                                "{} · {}",
-                                text(Text::VoiceOpenProject),
-                                project.name
-                            ))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(OpenProject(Some(project_id)))
-                            })),
+                            .label(format!("{} · {}", text(Text::VoiceOpenThread), thread.name))
+                            .on_click(
+                                cx.listener(move |_, _, _, cx| {
+                                    cx.emit(OpenThread(Some(thread_id)))
+                                }),
+                            ),
                     )
                 },
             )

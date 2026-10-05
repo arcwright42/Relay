@@ -8,7 +8,7 @@ fn duration(value: Option<u64>, language: Language) -> String {
 
 impl Workbench {
     pub(super) fn show_diagnostics(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(metrics) = self.agent_states[self.selected_project]
+        let Some(metrics) = self.agent_states[self.selected_thread]
             .messages
             .iter()
             .find(|message| message.id == id)

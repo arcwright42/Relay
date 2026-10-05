@@ -1,29 +1,29 @@
 use super::*;
-use relay_core::projects::{MemoryKind, MemorySource, ProjectCommand, ProjectDraft};
+use relay_core::threads::{MemoryKind, MemorySource, ThreadCommand, ThreadDraft};
 
 struct Fixture {
     runtime: AgentRuntime,
-    projects: Arc<ProjectStore>,
+    threads: Arc<ThreadStore>,
     root: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!("relay-delivery-{}", installer::unique_id()));
-        let projects = Arc::new(ProjectStore::new(root.clone()));
-        let runtime = AgentRuntime::new(root.clone(), projects.clone());
+        let threads = Arc::new(ThreadStore::new(root.clone()));
+        let runtime = AgentRuntime::new(root.clone(), threads.clone());
         Self {
             runtime,
-            projects,
+            threads,
             root,
         }
     }
     fn note(&self, content: &str) {
-        let project = self.projects.project(ProjectId(1)).unwrap();
-        self.projects
-            .apply(ProjectCommand::SaveContext {
-                project: project.id,
-                expected_revision: project.revision,
-                id: project.context.first().map(|item| item.id),
+        let thread = self.threads.thread(ThreadId(1)).unwrap();
+        self.threads
+            .apply(ThreadCommand::SaveContext {
+                thread: thread.id,
+                expected_revision: thread.revision,
+                id: thread.context.first().map(|item| item.id),
                 name: "Reference".into(),
                 content: content.into(),
                 included: true,
@@ -31,12 +31,12 @@ impl Fixture {
             .unwrap();
     }
     fn memory(&self, content: &str) {
-        let project = self.projects.project(ProjectId(1)).unwrap();
-        self.projects
-            .apply(ProjectCommand::SaveMemory {
-                project: project.id,
-                expected_revision: project.revision,
-                id: project.memory.first().map(|item| item.id),
+        let thread = self.threads.thread(ThreadId(1)).unwrap();
+        self.threads
+            .apply(ThreadCommand::SaveMemory {
+                thread: thread.id,
+                expected_revision: thread.revision,
+                id: thread.memory.first().map(|item| item.id),
                 kind: MemoryKind::Decision,
                 name: "Chosen architecture".into(),
                 content: content.into(),
@@ -46,7 +46,7 @@ impl Fixture {
     }
     fn ready(&self, resumed: bool) {
         self.runtime.shared.event(
-            ProjectId(1),
+            ThreadId(1),
             0,
             Event::Ready {
                 session_id: "test-session".into(),
@@ -57,7 +57,7 @@ impl Fixture {
     }
     fn finish(&self, outcome: TurnOutcome) {
         self.runtime.shared.event(
-            ProjectId(1),
+            ThreadId(1),
             0,
             Event::TurnEnded {
                 outcome,
@@ -76,7 +76,7 @@ impl Drop for Fixture {
 macro_rules! prompt {
     ($runtime:expr, $receiver:expr, $text:expr) => {{
         $runtime
-            .dispatch(ProjectId(1), AgentCommand::Send($text.into()))
+            .dispatch(ThreadId(1), AgentCommand::Send($text.into()))
             .unwrap();
         let started = Instant::now();
         loop {
@@ -105,7 +105,7 @@ fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent
     fixture
         .runtime
         .dispatch(
-            ProjectId(1),
+            ThreadId(1),
             AgentCommand::SetWorkingDirectory(custom.clone()),
         )
         .unwrap();
@@ -117,11 +117,11 @@ fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     // Changing folders advances the connection generation.
-    let generation = fixture.runtime.shared.projects.lock().unwrap()[&ProjectId(1)].generation;
+    let generation = fixture.runtime.shared.threads.lock().unwrap()[&ThreadId(1)].generation;
     fixture.runtime.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         generation,
         Event::Ready {
             session_id: "personal-files-session".into(),
@@ -136,11 +136,11 @@ fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent
         personal.to_string_lossy().as_ref()
     );
     assert_eq!(
-        fixture.runtime.snapshot(ProjectId(1)).working_directory,
+        fixture.runtime.snapshot(ThreadId(1)).working_directory,
         custom.canonicalize().unwrap()
     );
     fixture.runtime.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         generation,
         Event::TurnEnded {
             outcome: TurnOutcome::Complete,
@@ -149,7 +149,7 @@ fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent
     );
     assert!(prompt!(fixture.runtime, received, "Continue").is_none());
     fixture.runtime.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         generation,
         Event::TurnEnded {
             outcome: TurnOutcome::Complete,
@@ -161,18 +161,18 @@ fn a_custom_workfolder_still_delivers_the_personal_file_destination_to_the_agent
 #[test]
 fn memory_updates_removals_and_unconfirmed_changes_reach_the_next_acp_turn() {
     let fixture = Fixture::new();
-    fixture.memory("Use the existing project store");
+    fixture.memory("Use the existing thread store");
     let (connection, received) = relay_acp::test_connection();
     fixture
         .runtime
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
     let initial = prompt!(fixture.runtime, received, "First").unwrap();
     assert!(initial.contains("\"kind\":\"snapshot\""));
-    assert!(initial.contains("Use the existing project store"));
+    assert!(initial.contains("Use the existing thread store"));
     assert!(initial.contains("\"source_message_id\":12"));
     fixture.finish(TurnOutcome::Complete);
     assert!(prompt!(fixture.runtime, received, "Unchanged").is_none());
@@ -183,20 +183,20 @@ fn memory_updates_removals_and_unconfirmed_changes_reach_the_next_acp_turn() {
     assert!(changed.contains("\"kind\":\"delta\""));
     assert!(changed.contains("\"upsert_memories\""));
     assert!(changed.contains("Share memory through ACP context"));
-    assert!(!changed.contains("Use the existing project store"));
+    assert!(!changed.contains("Use the existing thread store"));
     fixture.finish(TurnOutcome::Cancelled);
     let retried = prompt!(fixture.runtime, received, "Continue").unwrap();
     assert!(retried.contains("\"kind\":\"snapshot\""));
     assert!(retried.contains("Share memory through ACP context"));
     fixture.finish(TurnOutcome::Complete);
 
-    let project = fixture.projects.project(ProjectId(1)).unwrap();
-    let id = project.memory[0].id;
+    let thread = fixture.threads.thread(ThreadId(1)).unwrap();
+    let id = thread.memory[0].id;
     fixture
-        .projects
-        .apply(ProjectCommand::RemoveMemory {
-            project: project.id,
-            expected_revision: project.revision,
+        .threads
+        .apply(ThreadCommand::RemoveMemory {
+            thread: thread.id,
+            expected_revision: thread.revision,
             id,
         })
         .unwrap();
@@ -212,15 +212,15 @@ fn memory_updates_removals_and_unconfirmed_changes_reach_the_next_acp_turn() {
     assert!(new_session.contains("Memory survives a new native session"));
     fixture.finish(TurnOutcome::Complete);
     fixture.runtime.shutdown();
-    let restored = AgentRuntime::new(fixture.root.clone(), fixture.projects.clone());
+    let restored = AgentRuntime::new(fixture.root.clone(), fixture.threads.clone());
     let (connection, received) = relay_acp::test_connection();
     restored
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     restored.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         0,
         Event::Ready {
             session_id: "test-session".into(),
@@ -242,11 +242,11 @@ fn stable_session_sends_snapshot_once_then_only_updates_and_preserves_durable_cu
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
     let initial = prompt!(fixture.runtime, received, "First").unwrap();
     assert!(initial.contains("Original reference"));
-    let saved = store::load(&fixture.root, ProjectId(1)).unwrap();
+    let saved = store::load(&fixture.root, ThreadId(1)).unwrap();
     assert!(
         saved.context_checkpoint.uncertain,
         "checkpoint must be persisted before dispatch"
@@ -261,19 +261,19 @@ fn stable_session_sends_snapshot_once_then_only_updates_and_preserves_durable_cu
     assert!(delta.contains("Updated reference"));
     assert!(!delta.contains("Original reference"));
     fixture.finish(TurnOutcome::Complete);
-    let saved = store::load(&fixture.root, ProjectId(1)).unwrap();
+    let saved = store::load(&fixture.root, ThreadId(1)).unwrap();
     assert!(!saved.context_checkpoint.uncertain);
     let baseline = saved.context_checkpoint.baseline_revision;
     fixture.runtime.shutdown();
-    let restored = AgentRuntime::new(fixture.root.clone(), fixture.projects.clone());
+    let restored = AgentRuntime::new(fixture.root.clone(), fixture.threads.clone());
     let (connection, received) = relay_acp::test_connection();
     restored
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     restored.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         0,
         Event::Ready {
             session_id: "test-session".into(),
@@ -283,7 +283,7 @@ fn stable_session_sends_snapshot_once_then_only_updates_and_preserves_durable_cu
     );
     assert!(prompt!(restored, received, "After restart").is_none());
     assert_eq!(
-        restored.shared.projects.lock().unwrap()[&ProjectId(1)]
+        restored.shared.threads.lock().unwrap()[&ThreadId(1)]
             .context_checkpoint
             .baseline_revision,
         baseline
@@ -306,7 +306,7 @@ fn cancelled_failed_and_refused_context_is_resynchronized_even_if_user_undoes_it
             .connections
             .lock()
             .unwrap()
-            .insert(ProjectId(1), connection);
+            .insert(ThreadId(1), connection);
         fixture.ready(false);
         prompt!(fixture.runtime, received, "Initial");
         fixture.finish(TurnOutcome::Complete);
@@ -314,7 +314,7 @@ fn cancelled_failed_and_refused_context_is_resynchronized_even_if_user_undoes_it
         prompt!(fixture.runtime, received, "Could be interrupted");
         fixture.finish(outcome);
         assert!(
-            store::load(&fixture.root, ProjectId(1))
+            store::load(&fixture.root, ThreadId(1))
                 .unwrap()
                 .context_checkpoint
                 .uncertain
@@ -337,7 +337,7 @@ fn editing_while_running_waits_for_next_turn_and_failed_resume_restores_history(
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
     let first = prompt!(fixture.runtime, received, "First task").unwrap();
     fixture.note("Edited during turn");
@@ -365,26 +365,28 @@ fn text_latency_ignores_empty_chunks_and_tools_and_diagnostics_survive_restart()
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
     prompt!(fixture.runtime, received, "Measure");
     fixture
         .runtime
         .shared
-        .event(ProjectId(1), 0, Event::Text(String::new()));
+        .event(ThreadId(1), 0, Event::Text(String::new()));
     fixture.runtime.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         0,
         Event::Tool(ToolActivity {
             id: "tool".into(),
             title: "Reading".into(),
             status: "completed".into(),
+            input: String::new(),
+            output: "Read result".into(),
         }),
     );
     assert!(
         fixture
             .runtime
-            .snapshot(ProjectId(1))
+            .snapshot(ThreadId(1))
             .messages
             .last()
             .unwrap()
@@ -397,7 +399,7 @@ fn text_latency_ignores_empty_chunks_and_tools_and_diagnostics_survive_restart()
     fixture
         .runtime
         .shared
-        .event(ProjectId(1), 0, Event::Text("Visible".into()));
+        .event(ThreadId(1), 0, Event::Text("Visible".into()));
     let usage = TokenUsage {
         input_tokens: 100,
         output_tokens: 20,
@@ -406,14 +408,14 @@ fn text_latency_ignores_empty_chunks_and_tools_and_diagnostics_survive_restart()
         thought_tokens: Some(10),
     };
     fixture.runtime.shared.event(
-        ProjectId(1),
+        ThreadId(1),
         0,
         Event::TurnEnded {
             outcome: TurnOutcome::Complete,
             usage: Some(usage.clone()),
         },
     );
-    let messages = store::load(&fixture.root, ProjectId(1)).unwrap().messages;
+    let messages = store::load(&fixture.root, ThreadId(1)).unwrap().messages;
     let metrics = messages
         .into_iter()
         .last()
@@ -428,12 +430,12 @@ fn text_latency_ignores_empty_chunks_and_tools_and_diagnostics_survive_restart()
 }
 
 #[test]
-fn persistence_failure_prevents_prompt_dispatch_and_another_project_cannot_supply_context() {
+fn persistence_failure_prevents_prompt_dispatch_and_another_thread_cannot_supply_context() {
     let fixture = Fixture::new();
-    fixture.note("PRIVATE PROJECT ONE");
+    fixture.note("PRIVATE THREAD ONE");
     let other = fixture
-        .projects
-        .apply(ProjectCommand::Create(ProjectDraft {
+        .threads
+        .apply(ThreadCommand::Create(ThreadDraft {
             name: "Other".into(),
             ..Default::default()
         }))
@@ -445,22 +447,22 @@ fn persistence_failure_prevents_prompt_dispatch_and_another_project_cannot_suppl
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
-    let file = fixture.root.join("projects/1/conversation.json");
+    let file = fixture.root.join("threads/1/conversation.json");
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
     fixture
         .runtime
-        .dispatch(ProjectId(1), AgentCommand::Send("Must not send".into()))
+        .dispatch(ThreadId(1), AgentCommand::Send("Must not send".into()))
         .unwrap();
     let started = Instant::now();
-    while fixture.runtime.snapshot(ProjectId(1)).status == ConnectionStatus::Running {
+    while fixture.runtime.snapshot(ThreadId(1)).status == ConnectionStatus::Running {
         assert!(started.elapsed() < Duration::from_secs(3));
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(received.try_recv().is_err());
-    assert!(fixture.runtime.snapshot(ProjectId(1)).error.is_some());
+    assert!(fixture.runtime.snapshot(ThreadId(1)).error.is_some());
     assert!(fixture.runtime.snapshot(other).messages.is_empty());
 }
 
@@ -473,11 +475,11 @@ fn tracked_voice_send_returns_its_response_and_stale_cancel_cannot_stop_a_later_
         .connections
         .lock()
         .unwrap()
-        .insert(ProjectId(1), connection);
+        .insert(ThreadId(1), connection);
     fixture.ready(false);
     let first = fixture
         .runtime
-        .send_turn(ProjectId(1), "Voice request".into())
+        .send_turn(ThreadId(1), "Voice request".into())
         .unwrap();
     let take_prompt = || {
         let started = Instant::now();
@@ -491,38 +493,35 @@ fn tracked_voice_send_returns_its_response_and_stale_cancel_cannot_stop_a_later_
         }
     };
     take_prompt();
-    let state = fixture.runtime.snapshot(ProjectId(1));
+    let state = fixture.runtime.snapshot(ThreadId(1));
     assert_eq!(state.messages.last().unwrap().id, first);
     assert_eq!(state.messages.last().unwrap().role, MessageRole::Assistant);
     assert!(
         fixture
             .runtime
-            .send_turn(ProjectId(1), "Cannot overlap".into())
+            .send_turn(ThreadId(1), "Cannot overlap".into())
             .is_err()
     );
     fixture.finish(TurnOutcome::Complete);
     let second = fixture
         .runtime
-        .send_turn(ProjectId(1), "Text request".into())
+        .send_turn(ThreadId(1), "Text request".into())
         .unwrap();
     take_prompt();
     assert_ne!(first, second);
     fixture
         .runtime
-        .dispatch(
-            ProjectId(1),
-            AgentCommand::CancelTurn { response_id: first },
-        )
+        .dispatch(ThreadId(1), AgentCommand::CancelTurn { response_id: first })
         .unwrap();
     assert_eq!(
-        fixture.runtime.snapshot(ProjectId(1)).status,
+        fixture.runtime.snapshot(ThreadId(1)).status,
         ConnectionStatus::Running
     );
     assert!(received.try_recv().is_err());
     fixture
         .runtime
         .dispatch(
-            ProjectId(1),
+            ThreadId(1),
             AgentCommand::CancelTurn {
                 response_id: second,
             },
@@ -530,7 +529,7 @@ fn tracked_voice_send_returns_its_response_and_stale_cancel_cannot_stop_a_later_
         .unwrap();
     assert!(matches!(received.try_recv().unwrap(), AcpCommand::Cancel));
     assert_eq!(
-        fixture.runtime.snapshot(ProjectId(1)).status,
+        fixture.runtime.snapshot(ThreadId(1)).status,
         ConnectionStatus::Cancelling
     );
 }

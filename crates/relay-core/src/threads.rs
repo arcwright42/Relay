@@ -1,5 +1,5 @@
-//! Durable project knowledge is independent of any harness or execution session.
-use crate::ProjectId;
+//! Durable thread knowledge is independent of any harness or execution session.
+use crate::ThreadId;
 
 pub const MAX_NAME_CHARS: usize = 120;
 pub const MAX_INSTRUCTIONS_CHARS: usize = 8_000;
@@ -49,7 +49,7 @@ impl MemoryKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemorySource {
-    /// A visible message in this project's Relay conversation, not a native ACP ID.
+    /// A visible message in this thread's Relay conversation, not a native ACP ID.
     Message { message_id: u64 },
     ClientSession {
         client: String,
@@ -69,8 +69,8 @@ pub struct MemoryItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Project {
-    pub id: ProjectId,
+pub struct Thread {
+    pub id: ThreadId,
     pub revision: u64,
     pub name: String,
     pub description: String,
@@ -80,33 +80,33 @@ pub struct Project {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ProjectCatalog {
+pub struct ThreadCatalog {
     pub revision: u64,
-    pub projects: Vec<Project>,
+    pub threads: Vec<Thread>,
     pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ProjectDraft {
+pub struct ThreadDraft {
     pub name: String,
     pub description: String,
     pub instructions: String,
 }
 
 #[derive(Clone, Debug)]
-pub enum ProjectCommand {
-    Create(ProjectDraft),
+pub enum ThreadCommand {
+    Create(ThreadDraft),
     CreateAtRevision {
         expected_catalog_revision: u64,
-        draft: ProjectDraft,
+        draft: ThreadDraft,
     },
     Edit {
-        project: ProjectId,
+        thread: ThreadId,
         expected_revision: u64,
-        draft: ProjectDraft,
+        draft: ThreadDraft,
     },
     SaveContext {
-        project: ProjectId,
+        thread: ThreadId,
         expected_revision: u64,
         id: Option<ContextId>,
         name: String,
@@ -114,12 +114,12 @@ pub enum ProjectCommand {
         included: bool,
     },
     RemoveContext {
-        project: ProjectId,
+        thread: ThreadId,
         expected_revision: u64,
         id: ContextId,
     },
     SaveMemory {
-        project: ProjectId,
+        thread: ThreadId,
         expected_revision: u64,
         id: Option<MemoryId>,
         kind: MemoryKind,
@@ -128,21 +128,32 @@ pub enum ProjectCommand {
         source: Option<MemorySource>,
     },
     RemoveMemory {
-        project: ProjectId,
+        thread: ThreadId,
         expected_revision: u64,
         id: MemoryId,
     },
 }
 
-pub trait ProjectService: Send + Sync {
+pub trait ThreadService: Send + Sync {
+    fn activity(&self) -> Vec<TaskActivity> {
+        Vec::new()
+    }
     fn revision(&self) -> u64 {
         self.snapshot().revision
     }
-    fn project(&self, id: ProjectId) -> Option<Project> {
-        self.snapshot().projects.into_iter().find(|p| p.id == id)
+    fn thread(&self, id: ThreadId) -> Option<Thread> {
+        self.snapshot().threads.into_iter().find(|p| p.id == id)
     }
     /// Memory-only, safe during rendering. Published values are already durable.
-    fn snapshot(&self) -> ProjectCatalog;
+    fn snapshot(&self) -> ThreadCatalog;
     /// Serialized, version-checked disk transaction. Call on a background executor.
-    fn apply(&self, command: ProjectCommand) -> Result<ProjectId, String>;
+    fn apply(&self, command: ThreadCommand) -> Result<ThreadId, String>;
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskActivity {
+    pub thread: ThreadId,
+    pub name: String,
+    pub state: String,
+    pub summary: String,
 }

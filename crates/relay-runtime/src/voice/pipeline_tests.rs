@@ -1,6 +1,5 @@
 //! Utterance lifecycle tests use controlled providers, without recording or network calls.
 use super::{tests::*, *};
-use relay_core::{ProjectId, routing::RouteTarget};
 use std::{sync::atomic::AtomicBool, time::Duration};
 
 struct Output(mpsc::Sender<mpsc::Sender<()>>);
@@ -21,30 +20,16 @@ impl SpeechOutput for Output {
 }
 struct Dialogue {
     prompts: Mutex<Vec<String>>,
-    choose: bool,
 }
 impl VoicePromptService for Dialogue {
     fn respond(
         &self,
         prompt: &str,
-        selection: Option<VoiceRouteSelection>,
         cancelled: &AtomicBool,
         progress: &dyn Fn(VoicePromptProgress),
     ) -> Result<VoicePromptResult, VoiceTurnError> {
         assert!(!cancelled.load(Ordering::Acquire));
         self.prompts.lock().unwrap().push(prompt.to_owned());
-        if self.choose && selection.is_none() {
-            return Ok(VoicePromptResult::ChooseProject {
-                catalog_revision: 7,
-                choices: vec![VoiceRouteChoice {
-                    target: RouteTarget::Existing(ProjectId(1)),
-                    project_name: Some("Project".into()),
-                }],
-            });
-        }
-        if self.choose {
-            assert_eq!(selection.unwrap().catalog_revision, 7);
-        }
         progress(VoicePromptProgress::Stage(VoiceTurnStage::WaitingForAgent));
         Ok(VoicePromptResult::Reply("项目回复".into()))
     }
@@ -89,7 +74,6 @@ fn one_utterance_routes_once_then_playback_gates_capture_until_complete() {
     let (plays, playback) = mpsc::channel();
     let dialogue = Arc::new(Dialogue {
         prompts: Mutex::default(),
-        choose: false,
     });
     let service = VoiceRuntime::with_pipeline(
         settings,
@@ -137,55 +121,12 @@ fn one_utterance_routes_once_then_playback_gates_capture_until_complete() {
 }
 
 #[test]
-fn low_confidence_choice_is_explicit_and_cannot_dispatch_twice() {
+fn wake_only_and_cancelled_asr_never_dispatch_a_thread_prompt() {
     let settings = Arc::new(Preferences::default());
     let (sender, starts) = mpsc::channel();
     let (requests, responses) = mpsc::channel();
     let dialogue = Arc::new(Dialogue {
         prompts: Mutex::default(),
-        choose: true,
-    });
-    let service = VoiceRuntime::build(
-        settings,
-        Arc::new(Resources),
-        Arc::new(Backend(sender)),
-        Arc::new(Transcriber(requests)),
-        Some(dialogue.clone()),
-        None,
-    );
-    let _active = active_backend(&service, &starts);
-    service.start_session();
-    let id = service.snapshot().session.unwrap().id;
-    utterance(&service, id);
-    responses
-        .recv_timeout(Duration::from_secs(3))
-        .unwrap()
-        .answer
-        .send(Ok("request".into()))
-        .unwrap();
-    wait(|| stage(&service) == Some(VoiceTurnStage::ChoosingProject));
-    assert!(control(&service).paused.load(Ordering::Acquire));
-    let turn = service.snapshot().session.unwrap().turn.unwrap().id;
-    service.choose_project(id + 1, turn, RouteTarget::Existing(ProjectId(1)));
-    service.choose_project(id, turn + 1, RouteTarget::Existing(ProjectId(1)));
-    service.choose_project(id, turn, RouteTarget::NewProject);
-    assert_eq!(dialogue.prompts.lock().unwrap().len(), 1);
-    service.choose_project(id, turn, RouteTarget::Existing(ProjectId(1)));
-    service.choose_project(id, turn, RouteTarget::Existing(ProjectId(1)));
-    wait(|| stage(&service) == Some(VoiceTurnStage::Complete));
-    assert_eq!(*dialogue.prompts.lock().unwrap(), ["request", "request"]);
-    assert!(!control(&service).paused.load(Ordering::Acquire));
-    service.shutdown();
-}
-
-#[test]
-fn wake_only_and_cancelled_asr_never_dispatch_a_project_prompt() {
-    let settings = Arc::new(Preferences::default());
-    let (sender, starts) = mpsc::channel();
-    let (requests, responses) = mpsc::channel();
-    let dialogue = Arc::new(Dialogue {
-        prompts: Mutex::default(),
-        choose: false,
     });
     let service = VoiceRuntime::build(
         settings,
@@ -233,7 +174,6 @@ fn cancelling_playback_keeps_the_acoustic_tail_gated_and_long_input_needs_resume
         Arc::new(Transcriber(requests)),
         Arc::new(Dialogue {
             prompts: Mutex::default(),
-            choose: false,
         }),
         Arc::new(Output(plays)),
     );

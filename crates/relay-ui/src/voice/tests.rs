@@ -1,6 +1,6 @@
 use super::VoicePanel;
 use gpui_kit::{AppContext, TestAppContext, component::Root, px, size, test::TestWindowExt};
-use relay_core::{ProjectId, routing::RouteTarget, settings::*, voice::*};
+use relay_core::{settings::*, voice::*};
 use std::{
     sync::{
         Arc, Mutex,
@@ -26,7 +26,6 @@ struct Voice {
     snapshot: Mutex<VoiceSnapshot>,
     ends: AtomicUsize,
     resumes: AtomicUsize,
-    choices: Mutex<Vec<(u64, u64, RouteTarget)>>,
 }
 impl Voice {
     fn active() -> Arc<Self> {
@@ -49,7 +48,6 @@ impl Voice {
             }),
             ends: AtomicUsize::new(0),
             resumes: AtomicUsize::new(0),
-            choices: Mutex::default(),
         })
     }
 }
@@ -64,12 +62,7 @@ impl VoiceService for Voice {
         assert_eq!(session_id, 1);
         self.resumes.fetch_add(1, Ordering::Relaxed);
     }
-    fn choose_project(&self, session_id: u64, turn_id: u64, target: RouteTarget) {
-        self.choices
-            .lock()
-            .unwrap()
-            .push((session_id, turn_id, target));
-    }
+
     fn end_session(&self, session_id: u64) {
         assert_eq!(session_id, 1);
         self.ends.fetch_add(1, Ordering::Relaxed);
@@ -144,29 +137,17 @@ fn turn(stage: VoiceTurnStage) -> VoiceTurnSnapshot {
         stage,
         prompt: "帮我总结工作。".into(),
         response: String::new(),
-        project: None,
-        choices: vec![],
-        catalog_revision: None,
+        thread: None,
         error: None,
     }
 }
 
 #[gpui_kit::test]
-fn choices_and_resume_keep_the_session_and_turn_identity(cx: &mut TestAppContext) {
+fn resume_and_end_keep_the_session_identity(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     for language in [Language::SimplifiedChinese, Language::English] {
         let voice = Voice::active();
-        let mut turn = turn(VoiceTurnStage::ChoosingProject);
-        turn.choices = vec![
-            VoiceRouteChoice {
-                target: RouteTarget::Existing(ProjectId(42)),
-                project_name: Some("工作项目".into()),
-            },
-            VoiceRouteChoice {
-                target: RouteTarget::NewProject,
-                project_name: None,
-            },
-        ];
+        let turn = turn(VoiceTurnStage::WaitingForAgent);
         voice
             .snapshot
             .lock()
@@ -185,17 +166,11 @@ fn choices_and_resume_keep_the_session_and_turn_identity(cx: &mut TestAppContext
         });
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.find(("voice-choose-project", 0_usize)).visible());
-            window.click(("voice-choose-project", 0_usize), cx);
             window.click("resume-voice-listening", cx);
             window.click("end-voice-session", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        assert_eq!(
-            *voice.choices.lock().unwrap(),
-            [(1, 9, RouteTarget::Existing(ProjectId(42)))]
-        );
         assert_eq!(voice.resumes.load(Ordering::Relaxed), 1);
         assert_eq!(voice.ends.load(Ordering::Relaxed), 1);
     }

@@ -1,25 +1,23 @@
 use gpui_kit::component::{Root, Theme, ThemeMode};
 use gpui_kit::*;
-use relay_core::{ProjectId, capture::Selection, settings::SettingsService, voice::VoiceService};
+use relay_core::{ThreadId, capture::Selection, settings::SettingsService, voice::VoiceService};
 use relay_runtime::{
-    AgentRuntime, BundledWakeResources, ClientSessionStore, FileStore, JevRouter, MoliFetcher,
-    ProjectStore, ProjectVoiceDialogue, SettingsStore, VoiceRuntime,
+    AgentRuntime, BundledWakeResources, ClientSessionStore, FileStore, MoliFetcher, SettingsStore,
+    ThreadVoiceDialogue, VoiceRuntime,
 };
 use relay_ui::{
-    EndVoiceSession, FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenProject,
-    OpenQuick, OpenWorkspace, Quit, RequestAccessibility, ResizeQuick, SaveFile, SendMessage,
-    VoicePanel, Workbench, apply_language,
+    EndVoiceSession, FocusSearch, OpenAgentSettings, OpenMicrophoneSettings, OpenQuick, OpenThread,
+    OpenWorkspace, Quit, RequestAccessibility, ResizeQuick, SaveFile, SendMessage, VoicePanel,
+    Workbench, apply_language,
 };
 use std::sync::Arc;
-mod routing_cli;
 mod voice_cli;
 
 #[derive(Clone)]
 struct Services {
     agents: Arc<AgentRuntime>,
     settings: Arc<SettingsStore>,
-    projects: Arc<ProjectStore>,
-    routing: Arc<JevRouter>,
+    threads: Arc<relay_runtime::native::NativeStore>,
     fetcher: Arc<MoliFetcher>,
     client_sessions: Arc<ClientSessionStore>,
     files: Arc<FileStore>,
@@ -35,12 +33,12 @@ struct Desktop {
 }
 impl Global for Desktop {}
 
-fn open_workspace(project: Option<ProjectId>, cx: &mut App) {
+fn open_workspace(thread: Option<ThreadId>, cx: &mut App) {
     if let Some((handle, view)) = cx.global::<Desktop>().workspace.clone()
         && handle
             .update(cx, |_, window, cx| {
-                if let Some(project) = project {
-                    view.update(cx, |view, cx| view.open_project(project, window, cx));
+                if let Some(thread) = thread {
+                    view.update(cx, |view, cx| view.open_thread(thread, window, cx));
                 }
                 window.activate_window();
             })
@@ -49,7 +47,7 @@ fn open_workspace(project: Option<ProjectId>, cx: &mut App) {
         cx.activate(true);
         return;
     }
-    open_window(false, Selection::default(), project, None, cx);
+    open_window(false, Selection::default(), thread, None, cx);
 }
 fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
     eprintln!(
@@ -57,11 +55,7 @@ fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
         selection.text.chars().count(),
         selection.accessibility_missing
     );
-    let project = cx
-        .global::<Desktop>()
-        .workspace
-        .as_ref()
-        .and_then(|(_, view)| view.read(cx).current_project());
+    let thread = Some(ThreadId(0));
     // A fresh capture starts a fresh toolbar, at the current selection's location.
     if let Some((handle, _)) = cx.global::<Desktop>().quick.clone() {
         let _ = handle.update(cx, |_, window, _| {
@@ -69,7 +63,7 @@ fn open_quick(selection: Selection, anchor: Option<(f32, f32)>, cx: &mut App) {
             window.remove_window();
         });
     }
-    open_window(true, selection, project, anchor, cx);
+    open_window(true, selection, thread, anchor, cx);
 }
 
 fn open_voice_session(cx: &mut App) {
@@ -102,7 +96,7 @@ fn open_voice_session(cx: &mut App) {
                     cx,
                 )
             });
-            cx.subscribe(&panel, |_, event: &OpenProject, cx| {
+            cx.subscribe(&panel, |_, event: &OpenThread, cx| {
                 open_workspace(event.0, cx);
             })
             .detach();
@@ -122,7 +116,7 @@ fn open_voice_session(cx: &mut App) {
 fn open_window(
     quick: bool,
     selection: Selection,
-    project: Option<ProjectId>,
+    thread: Option<ThreadId>,
     anchor: Option<(f32, f32)>,
     cx: &mut App,
 ) {
@@ -186,26 +180,25 @@ fn open_window(
                 let mut view = Workbench::new(
                     services.agents,
                     services.settings,
-                    services.projects,
-                    services.routing,
+                    services.threads.clone(),
                     window,
                     cx,
                 );
-                view.set_client_session_service(services.client_sessions, cx);
+                view.set_memory_services(services.threads, services.client_sessions, cx);
                 view.set_file_service(services.files, cx);
                 view.set_voice_service(services.voice, cx);
                 if quick {
                     view.capture(selection, services.fetcher, window, cx);
                 }
-                if let Some(project) = project {
-                    view.open_project(project, window, cx);
+                if let Some(thread) = thread {
+                    view.open_thread(thread, window, cx);
                 }
                 if let Some(error) = shortcut_error {
                     view.set_quick_notice(error, cx);
                 }
                 view
             });
-            cx.subscribe(&view, |_, event: &OpenProject, cx| {
+            cx.subscribe(&view, |_, event: &OpenThread, cx| {
                 open_workspace(event.0, cx)
             })
             .detach();
@@ -297,18 +290,57 @@ fn configure_working_directory() -> std::io::Result<()> {
 }
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "--relay-mcp") {
+        let result = (|| -> Result<(), String> {
+            let root = args
+                .get(2)
+                .map(std::path::PathBuf::from)
+                .ok_or("Missing MCP data directory")?;
+            let id = args
+                .get(3)
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or("Missing MCP scope")?;
+            relay_runtime::native::serve_stdio(root, ThreadId(id)).map_err(|e| e.to_string())
+        })();
+        if let Err(e) = result {
+            eprintln!("{e}");
+            std::process::exit(1)
+        }
+        return;
+    }
     if let Err(error) = configure_working_directory() {
         eprintln!("Could not set Relay working directory: {error}");
         std::process::exit(2);
     }
     let directory = AgentRuntime::default_directory();
-    if routing_cli::run(&directory) || voice_cli::run(&directory) {
+    if voice_cli::run(&directory) {
         return;
     }
     let settings = Arc::new(SettingsStore::new(directory.clone()));
-    let projects = Arc::new(ProjectStore::new(directory.clone()));
-    let agents = Arc::new(AgentRuntime::new(directory.clone(), projects.clone()));
-    let routing = Arc::new(JevRouter::new(&directory, projects.clone(), agents.clone()));
+    let threads = match relay_runtime::native::NativeStore::open(directory.clone()).and_then(|s| {
+        s.migrate()?;
+        Ok(Arc::new(s))
+    }) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("Could not open Relay's native state: {e:#}. Existing data preserved.");
+            return;
+        }
+    };
+    let agents = Arc::new(AgentRuntime::with_native(
+        directory.clone(),
+        threads.clone(),
+    ));
+    let resident =
+        match relay_runtime::native::ResidentWorker::start(threads.clone(), agents.clone()) {
+            Ok(worker) => Arc::new(worker),
+            Err(e) => {
+                eprintln!("Could not start Relay: {e:#}");
+                return;
+            }
+        };
     let files = Arc::new(FileStore::new(directory.clone()));
     let speech = Arc::new(relay_runtime::QwenSpeech::new(
         &directory,
@@ -319,23 +351,14 @@ fn main() {
         Arc::new(BundledWakeResources::discover()),
         Arc::new(relay_platform::MacVoiceBackend),
         speech.clone(),
-        Arc::new(ProjectVoiceDialogue::new(
-            routing.clone(),
-            projects.clone(),
-            agents.clone(),
-        )),
+        Arc::new(ThreadVoiceDialogue::new(threads.clone(), agents.clone())),
         speech,
     ));
-    let client_sessions = Arc::new(ClientSessionStore::new(
-        directory.clone(),
-        projects.clone(),
-        agents.clone(),
-    ));
+    let client_sessions = Arc::new(ClientSessionStore::new(directory.clone()));
     let services = Services {
         agents: agents.clone(),
         settings: settings.clone(),
-        projects,
-        routing,
+        threads,
         fetcher: Arc::new(MoliFetcher::new(&directory)),
         client_sessions: client_sessions.clone(),
         files,
@@ -371,6 +394,14 @@ fn main() {
         cx.on_action(|_: &OpenQuick, cx| {
             open_quick(Selection::default(), relay_platform::pointer_position(), cx)
         });
+        let shutdown_resident = resident.clone();
+        cx.on_app_quit(move |cx| {
+            let worker = shutdown_resident.clone();
+            cx.background_executor().spawn(async move {
+                worker.shutdown();
+            })
+        })
+        .detach();
         let shutdown_voice = voice.clone();
         cx.on_app_quit(move |cx| {
             let voice = shutdown_voice.clone();

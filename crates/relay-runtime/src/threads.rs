@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use relay_core::{ProjectId, projects::*};
+use relay_core::{ThreadId, threads::*};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fs, io::ErrorKind, path::PathBuf, sync::Mutex};
 
@@ -49,7 +49,7 @@ struct SavedDefinition {
 }
 
 impl SavedDefinition {
-    fn new(id: u64, draft: ProjectDraft) -> Self {
+    fn new(id: u64, draft: ThreadDraft) -> Self {
         Self {
             id,
             revision: 1,
@@ -63,9 +63,9 @@ impl SavedDefinition {
         }
     }
 
-    fn project(&self) -> Project {
-        Project {
-            id: ProjectId(self.id),
+    fn thread(&self) -> Thread {
+        Thread {
+            id: ThreadId(self.id),
             revision: self.revision,
             name: self.name.clone(),
             description: self.description.clone(),
@@ -108,7 +108,7 @@ impl SavedDefinition {
     fn validate(&self) -> Result<()> {
         ensure!(
             self.id > 0 && self.revision > 0,
-            "Invalid project identifier or revision."
+            "Invalid thread identifier or revision."
         );
         validate_name(&self.name)?;
         ensure!(
@@ -117,11 +117,11 @@ impl SavedDefinition {
         );
         ensure!(
             self.instructions.chars().count() <= MAX_INSTRUCTIONS_CHARS,
-            "Project instructions are limited to {MAX_INSTRUCTIONS_CHARS} characters."
+            "Thread instructions are limited to {MAX_INSTRUCTIONS_CHARS} characters."
         );
         ensure!(
             self.context.len() <= MAX_CONTEXT_ITEMS,
-            "A project can contain up to {MAX_CONTEXT_ITEMS} notes."
+            "A thread can contain up to {MAX_CONTEXT_ITEMS} notes."
         );
         let mut ids = BTreeSet::new();
         let mut included = self.instructions.chars().count()
@@ -148,7 +148,7 @@ impl SavedDefinition {
         ensure!(self.next_context_id > 0, "Invalid next context identifier.");
         ensure!(
             self.memory.len() <= MAX_MEMORY_ITEMS,
-            "A project can contain up to {MAX_MEMORY_ITEMS} memories."
+            "A thread can contain up to {MAX_MEMORY_ITEMS} memories."
         );
         ensure!(self.next_memory_id > 0, "Invalid next memory identifier.");
         let mut memory_ids = BTreeSet::new();
@@ -189,7 +189,7 @@ impl SavedDefinition {
         }
         ensure!(
             included <= MAX_SELECTED_CONTEXT_CHARS,
-            "Selected context and project memory are limited to {MAX_SELECTED_CONTEXT_CHARS} characters. Reduce memory or deselect some notes before adding more."
+            "Selected context and thread memory are limited to {MAX_SELECTED_CONTEXT_CHARS} characters. Reduce memory or deselect some notes before adding more."
         );
         Ok(())
     }
@@ -207,31 +207,28 @@ fn validate_name(name: &str) -> Result<()> {
 #[derive(Clone, Serialize, Deserialize)]
 struct SavedCatalog {
     version: u32,
-    next_project_id: u64,
-    projects: Vec<SavedDefinition>,
+    next_thread_id: u64,
+    threads: Vec<SavedDefinition>,
 }
 
 impl SavedCatalog {
     fn validate(&self) -> Result<()> {
         ensure!(
             matches!(self.version, 1..=3),
-            "Unsupported project catalog version {}. The file has been preserved.",
+            "Unsupported thread catalog version {}. The file has been preserved.",
             self.version
         );
         let mut ids = BTreeSet::new();
-        ensure!(
-            !self.projects.is_empty(),
-            "Project catalog cannot be empty."
-        );
-        for project in &self.projects {
+        ensure!(!self.threads.is_empty(), "Thread catalog cannot be empty.");
+        for thread in &self.threads {
             ensure!(
-                project.id < self.next_project_id && ids.insert(project.id),
-                "Invalid project identifier."
+                thread.id < self.next_thread_id && ids.insert(thread.id),
+                "Invalid thread identifier."
             );
-            project.validate()?;
+            thread.validate()?;
             ensure!(
-                self.version >= 3 || project.memory.iter().all(|m| m.client_source.is_none()),
-                "Native memory sources require project catalog v3."
+                self.version >= 3 || thread.memory.iter().all(|m| m.client_source.is_none()),
+                "Native memory sources require thread catalog v3."
             );
         }
         Ok(())
@@ -240,35 +237,31 @@ impl SavedCatalog {
 
 struct State {
     saved: Option<SavedCatalog>,
-    view: ProjectCatalog,
+    view: ThreadCatalog,
 }
 
 /// Disk writes are serialized, but never hold the read lock during I/O.
 /// Call `apply` on a background worker; readers see only successfully saved revisions.
-pub struct ProjectStore {
+pub struct ThreadStore {
     root: PathBuf,
     state: Mutex<State>,
     writer: Mutex<()>,
 }
 
-impl ProjectStore {
+impl ThreadStore {
     pub fn new(root: PathBuf) -> Self {
         let loaded = Self::load_or_migrate(&root);
         let view = match &loaded {
-            Ok(saved) => ProjectCatalog {
+            Ok(saved) => ThreadCatalog {
                 revision: 1,
-                projects: saved
-                    .projects
-                    .iter()
-                    .map(SavedDefinition::project)
-                    .collect(),
+                threads: saved.threads.iter().map(SavedDefinition::thread).collect(),
                 error: None,
             },
-            Err(error) => ProjectCatalog {
+            Err(error) => ThreadCatalog {
                 revision: 1,
-                projects: vec![],
+                threads: vec![],
                 error: Some(format!(
-                    "Could not read projects: {error:#}. Existing files have been preserved."
+                    "Could not read threads: {error:#}. Existing files have been preserved."
                 )),
             },
         };
@@ -283,26 +276,26 @@ impl ProjectStore {
     }
 
     fn load_or_migrate(root: &std::path::Path) -> Result<SavedCatalog> {
-        match fs::read(root.join("projects.json")) {
+        match fs::read(root.join("threads.json")) {
             Ok(bytes) => {
                 let saved: SavedCatalog =
-                    serde_json::from_slice(&bytes).context("Reading project catalog")?;
+                    serde_json::from_slice(&bytes).context("Reading thread catalog")?;
                 saved.validate()?;
                 return Ok(saved);
             }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        let mut projects = Vec::new();
-        // These are the only product IDs in the preview version. Probe ID 9001 is not a user project.
+        let mut threads = Vec::new();
+        // These are the only product IDs in the preview version. Probe ID 9001 is not a user thread.
         for (id, name) in [(1, "Product Design"), (2, "Agent Infra"), (3, "Personal")] {
             if root
-                .join(format!("projects/{id}/conversation.json"))
+                .join(format!("threads/{id}/conversation.json"))
                 .try_exists()?
             {
-                projects.push(SavedDefinition::new(
+                threads.push(SavedDefinition::new(
                     id,
-                    ProjectDraft {
+                    ThreadDraft {
                         name: name.into(),
                         ..Default::default()
                     },
@@ -311,123 +304,121 @@ impl ProjectStore {
         }
         let mut next_id = 1;
         // Reserve every existing directory, including probe/unknown IDs, so none can be overwritten.
-        match fs::read_dir(root.join("projects")) {
+        match fs::read_dir(root.join("threads")) {
             Ok(entries) => {
                 for entry in entries {
                     if let Ok(id) = entry?.file_name().to_string_lossy().parse::<u64>() {
                         next_id =
-                            next_id.max(id.checked_add(1).context("Project identifier exhausted")?);
+                            next_id.max(id.checked_add(1).context("Thread identifier exhausted")?);
                     }
                 }
             }
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
-        if projects.is_empty() {
-            projects.push(SavedDefinition::new(
+        if threads.is_empty() {
+            threads.push(SavedDefinition::new(
                 next_id,
-                ProjectDraft {
-                    name: "My project".into(),
+                ThreadDraft {
+                    name: "My thread".into(),
                     ..Default::default()
                 },
             ));
             next_id = next_id
                 .checked_add(1)
-                .context("Project identifier exhausted")?;
+                .context("Thread identifier exhausted")?;
         }
         let saved = SavedCatalog {
             version: 2,
-            next_project_id: next_id,
-            projects,
+            next_thread_id: next_id,
+            threads,
         };
         saved.validate()?;
-        super::store::write_json(&root.join("projects.json"), &saved)?;
+        super::store::write_json(&root.join("threads.json"), &saved)?;
         Ok(saved)
     }
 
-    fn transaction(&self, command: ProjectCommand) -> Result<ProjectId> {
-        let _writer = self.writer.lock().expect("project writer lock");
+    fn transaction(&self, command: ThreadCommand) -> Result<ThreadId> {
+        let _writer = self.writer.lock().expect("thread writer lock");
         let command = match command {
-            ProjectCommand::CreateAtRevision {
+            ThreadCommand::CreateAtRevision {
                 expected_catalog_revision,
                 draft,
             } => {
                 ensure!(
                     self.revision() == expected_catalog_revision,
-                    "The project list changed. Review the destination and try again."
+                    "The thread list changed. Review the destination and try again."
                 );
-                ProjectCommand::Create(draft)
+                ThreadCommand::Create(draft)
             }
             command => command,
         };
         let mut saved = self
             .state
             .lock()
-            .expect("project catalog lock")
+            .expect("thread catalog lock")
             .saved
             .clone()
-            .context(
-                "Resolve the project catalog error and restart Relay before editing projects",
-            )?;
-        let id = if let ProjectCommand::Create(draft) = command {
+            .context("Resolve the thread catalog error and restart Relay before editing threads")?;
+        let id = if let ThreadCommand::Create(draft) = command {
             ensure!(
-                saved.projects.len() < 128,
-                "A workspace can contain up to 128 projects."
+                saved.threads.len() < 128,
+                "A workspace can contain up to 128 threads."
             );
-            let mut id = saved.next_project_id;
-            while self.root.join(format!("projects/{id}")).try_exists()? {
-                id = id.checked_add(1).context("Project identifier exhausted")?;
+            let mut id = saved.next_thread_id;
+            while self.root.join(format!("threads/{id}")).try_exists()? {
+                id = id.checked_add(1).context("Thread identifier exhausted")?;
             }
-            saved.next_project_id = id.checked_add(1).context("Project identifier exhausted")?;
-            saved.projects.push(SavedDefinition::new(id, draft));
-            ProjectId(id)
+            saved.next_thread_id = id.checked_add(1).context("Thread identifier exhausted")?;
+            saved.threads.push(SavedDefinition::new(id, draft));
+            ThreadId(id)
         } else {
             let (id, expected) = match &command {
-                ProjectCommand::Edit {
-                    project,
+                ThreadCommand::Edit {
+                    thread,
                     expected_revision,
                     ..
                 }
-                | ProjectCommand::SaveContext {
-                    project,
+                | ThreadCommand::SaveContext {
+                    thread,
                     expected_revision,
                     ..
                 }
-                | ProjectCommand::RemoveContext {
-                    project,
+                | ThreadCommand::RemoveContext {
+                    thread,
                     expected_revision,
                     ..
                 }
-                | ProjectCommand::SaveMemory {
-                    project,
+                | ThreadCommand::SaveMemory {
+                    thread,
                     expected_revision,
                     ..
                 }
-                | ProjectCommand::RemoveMemory {
-                    project,
+                | ThreadCommand::RemoveMemory {
+                    thread,
                     expected_revision,
                     ..
-                } => (*project, *expected_revision),
-                ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
+                } => (*thread, *expected_revision),
+                ThreadCommand::Create(_) | ThreadCommand::CreateAtRevision { .. } => {
                     unreachable!()
                 }
             };
-            let project = saved
-                .projects
+            let thread = saved
+                .threads
                 .iter_mut()
                 .find(|p| p.id == id.0)
-                .context("Unknown project")?;
+                .context("Unknown thread")?;
             ensure!(
-                project.revision == expected,
-                "This project changed while you were editing. Reopen the editor and try again."
+                thread.revision == expected,
+                "This thread changed while you were editing. Reopen the editor and try again."
             );
             match command {
-                ProjectCommand::Edit { draft, .. } => {
-                    project.name = draft.name.trim().into();
-                    project.description = draft.description;
-                    project.instructions = draft.instructions;
+                ThreadCommand::Edit { draft, .. } => {
+                    thread.name = draft.name.trim().into();
+                    thread.description = draft.description;
+                    thread.instructions = draft.instructions;
                 }
-                ProjectCommand::SaveContext {
+                ThreadCommand::SaveContext {
                     id,
                     name,
                     content,
@@ -435,35 +426,35 @@ impl ProjectStore {
                     ..
                 } => {
                     let item = if let Some(id) = id {
-                        project
+                        thread
                             .context
                             .iter_mut()
                             .find(|item| item.id == id.0)
                             .context("Unknown note")?
                     } else {
-                        let id = project.next_context_id;
-                        project.next_context_id =
+                        let id = thread.next_context_id;
+                        thread.next_context_id =
                             id.checked_add(1).context("Context identifier exhausted")?;
-                        project.context.push(SavedItem {
+                        thread.context.push(SavedItem {
                             id,
                             name: String::new(),
                             content: String::new(),
                             included,
                         });
-                        project.context.last_mut().expect("new note")
+                        thread.context.last_mut().expect("new note")
                     };
                     item.name = name.trim().into();
                     item.content = content;
                     item.included = included;
                 }
-                ProjectCommand::RemoveContext { id, .. } => {
-                    let length = project.context.len();
-                    project.context.retain(|item| item.id != id.0);
-                    if length == project.context.len() {
+                ThreadCommand::RemoveContext { id, .. } => {
+                    let length = thread.context.len();
+                    thread.context.retain(|item| item.id != id.0);
+                    if length == thread.context.len() {
                         bail!("Unknown note");
                     }
                 }
-                ProjectCommand::SaveMemory {
+                ThreadCommand::SaveMemory {
                     id,
                     kind,
                     name,
@@ -472,16 +463,16 @@ impl ProjectStore {
                     ..
                 } => {
                     let item = if let Some(id) = id {
-                        project
+                        thread
                             .memory
                             .iter_mut()
                             .find(|item| item.id == id.0)
                             .context("Unknown memory")?
                     } else {
-                        let id = project.next_memory_id;
-                        project.next_memory_id =
+                        let id = thread.next_memory_id;
+                        thread.next_memory_id =
                             id.checked_add(1).context("Memory identifier exhausted")?;
-                        project.memory.push(SavedMemory {
+                        thread.memory.push(SavedMemory {
                             id,
                             kind: kind.code().into(),
                             name: String::new(),
@@ -503,31 +494,31 @@ impl ProjectStore {
                                 _ => None,
                             },
                         });
-                        project.memory.last_mut().expect("new memory")
+                        thread.memory.last_mut().expect("new memory")
                     };
                     item.kind = kind.code().into();
                     item.name = name.trim().into();
                     item.content = content;
                 }
-                ProjectCommand::RemoveMemory { id, .. } => {
-                    let length = project.memory.len();
-                    project.memory.retain(|item| item.id != id.0);
-                    ensure!(length != project.memory.len(), "Unknown memory");
+                ThreadCommand::RemoveMemory { id, .. } => {
+                    let length = thread.memory.len();
+                    thread.memory.retain(|item| item.id != id.0);
+                    ensure!(length != thread.memory.len(), "Unknown memory");
                 }
-                ProjectCommand::Create(_) | ProjectCommand::CreateAtRevision { .. } => {
+                ThreadCommand::Create(_) | ThreadCommand::CreateAtRevision { .. } => {
                     unreachable!()
                 }
             }
-            project.revision = project
+            thread.revision = thread
                 .revision
                 .checked_add(1)
-                .context("Project revision exhausted")?;
+                .context("Thread revision exhausted")?;
             id
         };
         // Older clients must reject native provenance instead of silently discarding it.
         saved.version = saved.version.max(
             if saved
-                .projects
+                .threads
                 .iter()
                 .any(|p| p.memory.iter().any(|m| m.client_source.is_some()))
             {
@@ -537,46 +528,38 @@ impl ProjectStore {
             },
         );
         saved.validate()?;
-        super::store::write_json(&self.root.join("projects.json"), &saved)?;
-        let mut state = self.state.lock().expect("project catalog lock");
-        state.view.projects = saved
-            .projects
-            .iter()
-            .map(SavedDefinition::project)
-            .collect();
+        super::store::write_json(&self.root.join("threads.json"), &saved)?;
+        let mut state = self.state.lock().expect("thread catalog lock");
+        state.view.threads = saved.threads.iter().map(SavedDefinition::thread).collect();
         state.view.revision += 1;
         state.saved = Some(saved);
         Ok(id)
     }
 }
 
-impl ProjectService for ProjectStore {
+impl ThreadService for ThreadStore {
     fn revision(&self) -> u64 {
         self.state
             .lock()
-            .expect("project catalog lock")
+            .expect("thread catalog lock")
             .view
             .revision
     }
-    fn project(&self, id: ProjectId) -> Option<Project> {
+    fn thread(&self, id: ThreadId) -> Option<Thread> {
         self.state
             .lock()
-            .expect("project catalog lock")
+            .expect("thread catalog lock")
             .saved
             .as_ref()?
-            .projects
+            .threads
             .iter()
             .find(|p| p.id == id.0)
-            .map(SavedDefinition::project)
+            .map(SavedDefinition::thread)
     }
-    fn snapshot(&self) -> ProjectCatalog {
-        self.state
-            .lock()
-            .expect("project catalog lock")
-            .view
-            .clone()
+    fn snapshot(&self) -> ThreadCatalog {
+        self.state.lock().expect("thread catalog lock").view.clone()
     }
-    fn apply(&self, command: ProjectCommand) -> Result<ProjectId, String> {
+    fn apply(&self, command: ThreadCommand) -> Result<ThreadId, String> {
         self.transaction(command)
             .map_err(|error| format!("{error:#}"))
     }
@@ -589,15 +572,15 @@ mod tests {
     #[test]
     fn native_memory_source_survives_edits_restart_and_context_delivery() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
+        let store = ThreadStore::new(root.clone());
         let source = MemorySource::ClientSession {
             client: "codex".into(),
             session_id: "native-session".into(),
             message_id: 123,
         };
         store
-            .apply(ProjectCommand::SaveMemory {
-                project: ProjectId(1),
+            .apply(ThreadCommand::SaveMemory {
+                thread: ThreadId(1),
                 expected_revision: 1,
                 id: None,
                 kind: MemoryKind::Decision,
@@ -606,10 +589,10 @@ mod tests {
                 source: Some(source.clone()),
             })
             .unwrap();
-        let memory = store.project(ProjectId(1)).unwrap().memory[0].clone();
+        let memory = store.thread(ThreadId(1)).unwrap().memory[0].clone();
         store
-            .apply(ProjectCommand::SaveMemory {
-                project: ProjectId(1),
+            .apply(ThreadCommand::SaveMemory {
+                thread: ThreadId(1),
                 expected_revision: 2,
                 id: Some(memory.id),
                 kind: MemoryKind::Fact,
@@ -619,32 +602,30 @@ mod tests {
             })
             .unwrap();
         drop(store);
-        let restored = ProjectStore::new(root.clone())
-            .project(ProjectId(1))
-            .unwrap();
+        let restored = ThreadStore::new(root.clone()).thread(ThreadId(1)).unwrap();
         assert_eq!(restored.memory[0].source, Some(source));
-        let context = crate::context::Snapshot::from_project(&restored)
+        let context = crate::context::Snapshot::from_thread(&restored)
             .delivery(None)
             .text
             .unwrap();
         assert!(context.contains("\"client_source\":{\"client\":\"codex\""));
         let saved: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("projects.json")).unwrap()).unwrap();
+            serde_json::from_slice(&fs::read(root.join("threads.json")).unwrap()).unwrap();
         assert_eq!(saved["version"], 3);
         fs::remove_dir_all(root).unwrap();
     }
     fn root() -> PathBuf {
-        std::env::temp_dir().join(format!("relay-projects-{}", crate::installer::unique_id()))
+        std::env::temp_dir().join(format!("relay-threads-{}", crate::installer::unique_id()))
     }
     fn add(
-        store: &ProjectStore,
-        id: ProjectId,
+        store: &ThreadStore,
+        id: ThreadId,
         revision: u64,
         included: bool,
         content: String,
-    ) -> Result<ProjectId, String> {
-        store.apply(ProjectCommand::SaveContext {
-            project: id,
+    ) -> Result<ThreadId, String> {
+        store.apply(ThreadCommand::SaveContext {
+            thread: id,
             expected_revision: revision,
             id: None,
             name: "Reference".into(),
@@ -654,43 +635,36 @@ mod tests {
     }
 
     #[test]
-    fn project_data_survives_restart_without_any_agent_session() {
+    fn thread_data_survives_restart_without_any_agent_session() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
+        let store = ThreadStore::new(root.clone());
         let id = store
-            .apply(ProjectCommand::Create(ProjectDraft {
+            .apply(ThreadCommand::Create(ThreadDraft {
                 name: "用户项目".into(),
                 instructions: "Rust only".into(),
                 description: "Local work".into(),
             }))
             .unwrap();
-        add(
-            &store,
-            id,
-            1,
-            true,
-            "Decisions remain in the project".into(),
-        )
-        .unwrap();
-        let current = store.project(id).unwrap();
+        add(&store, id, 1, true, "Decisions remain in the thread".into()).unwrap();
+        let current = store.thread(id).unwrap();
         assert_eq!(current.revision, 2);
         assert!(
             store
-                .apply(ProjectCommand::Edit {
-                    project: id,
+                .apply(ThreadCommand::Edit {
+                    thread: id,
                     expected_revision: 1,
-                    draft: ProjectDraft::default()
+                    draft: ThreadDraft::default()
                 })
                 .unwrap_err()
                 .contains("changed")
         );
         drop(store);
-        let store = ProjectStore::new(root.clone());
-        assert_eq!(store.project(id), Some(current));
-        assert_eq!(store.project(ProjectId(1)).unwrap().context.len(), 0);
+        let store = ThreadStore::new(root.clone());
+        assert_eq!(store.thread(id), Some(current));
+        assert_eq!(store.thread(ThreadId(1)).unwrap().context.len(), 0);
         assert!(
             !root
-                .join(format!("projects/{}/conversation.json", id.0))
+                .join(format!("threads/{}/conversation.json", id.0))
                 .exists()
         );
         fs::remove_dir_all(root).unwrap();
@@ -700,33 +674,33 @@ mod tests {
     fn migration_preserves_legacy_ids_and_does_not_import_preview_materials_or_probe() {
         let root = root();
         for id in [1, 3, 9001] {
-            fs::create_dir_all(root.join(format!("projects/{id}"))).unwrap();
+            fs::create_dir_all(root.join(format!("threads/{id}"))).unwrap();
             fs::write(
-                root.join(format!("projects/{id}/conversation.json")),
+                root.join(format!("threads/{id}/conversation.json")),
                 "untouched history",
             )
             .unwrap();
         }
-        let store = ProjectStore::new(root.clone());
-        let projects = store.snapshot().projects;
+        let store = ThreadStore::new(root.clone());
+        let threads = store.snapshot().threads;
         assert_eq!(
-            projects.iter().map(|p| p.id).collect::<Vec<_>>(),
-            [ProjectId(1), ProjectId(3)]
+            threads.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [ThreadId(1), ThreadId(3)]
         );
         assert!(
-            projects
+            threads
                 .iter()
                 .all(|p| p.context.is_empty() && p.instructions.is_empty())
         );
         let id = store
-            .apply(ProjectCommand::Create(ProjectDraft {
+            .apply(ThreadCommand::Create(ThreadDraft {
                 name: "New".into(),
                 ..Default::default()
             }))
             .unwrap();
         assert!(id.0 > 9001);
         assert_eq!(
-            fs::read_to_string(root.join("projects/1/conversation.json")).unwrap(),
+            fs::read_to_string(root.join("threads/1/conversation.json")).unwrap(),
             "untouched history"
         );
         fs::remove_dir_all(root).unwrap();
@@ -736,23 +710,23 @@ mod tests {
     fn unreadable_or_future_catalog_is_never_overwritten() {
         for content in [
             "broken json",
-            r#"{"version":99,"next_project_id":2,"projects":[]}"#,
+            r#"{"version":99,"next_thread_id":2,"threads":[]}"#,
         ] {
             let root = root();
             fs::create_dir_all(&root).unwrap();
-            fs::write(root.join("projects.json"), content).unwrap();
-            let store = ProjectStore::new(root.clone());
+            fs::write(root.join("threads.json"), content).unwrap();
+            let store = ThreadStore::new(root.clone());
             assert!(store.snapshot().error.is_some());
             assert!(
                 store
-                    .apply(ProjectCommand::Create(ProjectDraft {
+                    .apply(ThreadCommand::Create(ThreadDraft {
                         name: "New".into(),
                         ..Default::default()
                     }))
                     .is_err()
             );
             assert_eq!(
-                fs::read_to_string(root.join("projects.json")).unwrap(),
+                fs::read_to_string(root.join("threads.json")).unwrap(),
                 content
             );
             fs::remove_dir_all(root).unwrap();
@@ -762,57 +736,54 @@ mod tests {
     #[test]
     fn write_failure_does_not_publish_unsaved_context() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
-        let initial = store.project(ProjectId(1)).unwrap();
-        fs::rename(root.join("projects.json"), root.join("original.json")).unwrap();
-        fs::create_dir(root.join("projects.json")).unwrap();
-        assert!(add(&store, ProjectId(1), 1, true, "must not leak".into()).is_err());
-        assert_eq!(store.project(ProjectId(1)).unwrap(), initial);
+        let store = ThreadStore::new(root.clone());
+        let initial = store.thread(ThreadId(1)).unwrap();
+        fs::rename(root.join("threads.json"), root.join("original.json")).unwrap();
+        fs::create_dir(root.join("threads.json")).unwrap();
+        assert!(add(&store, ThreadId(1), 1, true, "must not leak".into()).is_err());
+        assert_eq!(store.thread(ThreadId(1)).unwrap(), initial);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn limits_count_unicode_and_selection_without_silently_truncating() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
-        let id = ProjectId(1);
+        let store = ThreadStore::new(root.clone());
+        let id = ThreadId(1);
         assert!(add(&store, id, 1, true, "中".repeat(MAX_ITEM_CHARS + 1)).is_err());
         add(&store, id, 1, true, "中".repeat(MAX_ITEM_CHARS)).unwrap();
         add(&store, id, 2, true, "文".repeat(MAX_ITEM_CHARS)).unwrap();
         assert!(add(&store, id, 3, true, "字".repeat(MAX_ITEM_CHARS)).is_err());
         add(&store, id, 3, false, "字".repeat(MAX_ITEM_CHARS)).unwrap();
         assert_eq!(
-            store.project(id).unwrap().context[0]
-                .content
-                .chars()
-                .count(),
+            store.thread(id).unwrap().context[0].content.chars().count(),
             MAX_ITEM_CHARS
         );
-        let first = store.project(id).unwrap().context[0].id;
+        let first = store.thread(id).unwrap().context[0].id;
         store
-            .apply(ProjectCommand::RemoveContext {
-                project: id,
+            .apply(ThreadCommand::RemoveContext {
+                thread: id,
                 expected_revision: 4,
                 id: first,
             })
             .unwrap();
         add(&store, id, 5, true, "Replacement".into()).unwrap();
-        assert!(store.project(id).unwrap().context.last().unwrap().id > first);
+        assert!(store.thread(id).unwrap().context.last().unwrap().id > first);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn project_memory_is_durable_isolated_and_keeps_its_source_on_edit() {
+    fn thread_memory_is_durable_isolated_and_keeps_its_source_on_edit() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
+        let store = ThreadStore::new(root.clone());
         let other = store
-            .apply(ProjectCommand::Create(ProjectDraft {
-                name: "Another project".into(),
+            .apply(ThreadCommand::Create(ThreadDraft {
+                name: "Another thread".into(),
                 ..Default::default()
             }))
             .unwrap();
-        let save = |revision, id, content: &str, source| ProjectCommand::SaveMemory {
-            project: ProjectId(1),
+        let save = |revision, id, content: &str, source| ThreadCommand::SaveMemory {
+            thread: ThreadId(1),
             expected_revision: revision,
             id,
             kind: MemoryKind::Decision,
@@ -824,8 +795,8 @@ mod tests {
         store
             .apply(save(1, None, "Use local JSON", source.clone()))
             .unwrap();
-        let memory = store.project(ProjectId(1)).unwrap().memory[0].clone();
-        assert!(store.project(other).unwrap().memory.is_empty());
+        let memory = store.thread(ThreadId(1)).unwrap().memory[0].clone();
+        assert!(store.thread(other).unwrap().memory.is_empty());
         assert!(
             store
                 .apply(save(1, Some(memory.id), "Stale edit", None))
@@ -834,14 +805,14 @@ mod tests {
         store
             .apply(save(2, Some(memory.id), "Use versioned local JSON", None))
             .unwrap();
-        let expected = store.project(ProjectId(1)).unwrap();
+        let expected = store.thread(ThreadId(1)).unwrap();
         assert_eq!(expected.memory[0].source, source);
         drop(store);
-        let restored = ProjectStore::new(root.clone());
-        assert_eq!(restored.project(ProjectId(1)), Some(expected));
+        let restored = ThreadStore::new(root.clone());
+        assert_eq!(restored.thread(ThreadId(1)), Some(expected));
         restored
-            .apply(ProjectCommand::RemoveMemory {
-                project: ProjectId(1),
+            .apply(ThreadCommand::RemoveMemory {
+                thread: ThreadId(1),
                 expected_revision: 3,
                 id: memory.id,
             })
@@ -849,51 +820,51 @@ mod tests {
         restored
             .apply(save(4, None, "Replacement decision", None))
             .unwrap();
-        assert!(restored.project(ProjectId(1)).unwrap().memory[0].id > memory.id);
-        assert!(restored.project(other).unwrap().memory.is_empty());
+        assert!(restored.thread(ThreadId(1)).unwrap().memory[0].id > memory.id);
+        assert!(restored.thread(other).unwrap().memory.is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn legacy_catalog_loads_unchanged_and_upgrades_only_when_memory_is_saved() {
         let root = root();
-        drop(ProjectStore::new(root.clone()));
-        let path = root.join("projects.json");
+        drop(ThreadStore::new(root.clone()));
+        let path = root.join("threads.json");
         let mut old: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         old["version"] = 1.into();
-        for project in old["projects"].as_array_mut().unwrap() {
-            project.as_object_mut().unwrap().remove("memory");
-            project.as_object_mut().unwrap().remove("next_memory_id");
+        for thread in old["threads"].as_array_mut().unwrap() {
+            thread.as_object_mut().unwrap().remove("memory");
+            thread.as_object_mut().unwrap().remove("next_memory_id");
         }
         let bytes = serde_json::to_vec(&old).unwrap();
         fs::write(&path, &bytes).unwrap();
-        let store = ProjectStore::new(root.clone());
-        assert!(store.project(ProjectId(1)).unwrap().memory.is_empty());
+        let store = ThreadStore::new(root.clone());
+        assert!(store.thread(ThreadId(1)).unwrap().memory.is_empty());
         assert_eq!(fs::read(&path).unwrap(), bytes);
         store
-            .apply(ProjectCommand::SaveMemory {
-                project: ProjectId(1),
+            .apply(ThreadCommand::SaveMemory {
+                thread: ThreadId(1),
                 expected_revision: 1,
                 id: None,
                 kind: MemoryKind::Fact,
-                name: "Project fact".into(),
-                content: "Memory lives in the project".into(),
+                name: "Thread fact".into(),
+                content: "Memory lives in the thread".into(),
                 source: None,
             })
             .unwrap();
         let current: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(current["version"], 2);
-        assert_eq!(current["projects"][0]["memory"][0]["id"], 1);
+        assert_eq!(current["threads"][0]["memory"][0]["id"], 1);
         // An unrecognized memory kind cannot be silently discarded on the next write.
         let mut corrupt = current;
-        corrupt["projects"][0]["memory"][0]["kind"] = "future_kind".into();
+        corrupt["threads"][0]["memory"][0]["kind"] = "future_kind".into();
         let bytes = serde_json::to_vec(&corrupt).unwrap();
         fs::write(&path, &bytes).unwrap();
-        let unreadable = ProjectStore::new(root.clone());
+        let unreadable = ThreadStore::new(root.clone());
         assert!(unreadable.snapshot().error.is_some());
         assert!(
             unreadable
-                .apply(ProjectCommand::Create(ProjectDraft {
+                .apply(ThreadCommand::Create(ThreadDraft {
                     name: "Must not overwrite".into(),
                     ..Default::default()
                 }))
@@ -906,9 +877,9 @@ mod tests {
     #[test]
     fn memory_limits_and_failed_writes_do_not_publish_or_truncate_content() {
         let root = root();
-        let store = ProjectStore::new(root.clone());
-        let save = |content: String| ProjectCommand::SaveMemory {
-            project: ProjectId(1),
+        let store = ThreadStore::new(root.clone());
+        let save = |content: String| ThreadCommand::SaveMemory {
+            thread: ThreadId(1),
             expected_revision: 1,
             id: None,
             kind: MemoryKind::Fact,
@@ -921,33 +892,33 @@ mod tests {
                 .apply(save("中".repeat(MAX_MEMORY_CHARS + 1)))
                 .is_err()
         );
-        assert_eq!(store.project(ProjectId(1)).unwrap().revision, 1);
+        assert_eq!(store.thread(ThreadId(1)).unwrap().revision, 1);
         store.apply(save("中".repeat(MAX_MEMORY_CHARS))).unwrap();
         assert_eq!(
-            store.project(ProjectId(1)).unwrap().memory[0]
+            store.thread(ThreadId(1)).unwrap().memory[0]
                 .content
                 .chars()
                 .count(),
             MAX_MEMORY_CHARS
         );
-        add(&store, ProjectId(1), 2, true, "a".repeat(MAX_ITEM_CHARS)).unwrap();
-        add(&store, ProjectId(1), 3, true, "b".repeat(MAX_ITEM_CHARS)).unwrap();
-        let initial = store.project(ProjectId(1)).unwrap();
+        add(&store, ThreadId(1), 2, true, "a".repeat(MAX_ITEM_CHARS)).unwrap();
+        add(&store, ThreadId(1), 3, true, "b".repeat(MAX_ITEM_CHARS)).unwrap();
+        let initial = store.thread(ThreadId(1)).unwrap();
         // Selected notes and memory share a budget; neither is silently deselected.
-        assert!(add(&store, ProjectId(1), 4, true, "c".repeat(4_000)).is_err());
-        assert_eq!(store.project(initial.id), Some(initial.clone()));
-        fs::rename(root.join("projects.json"), root.join("original.json")).unwrap();
-        fs::create_dir(root.join("projects.json")).unwrap();
+        assert!(add(&store, ThreadId(1), 4, true, "c".repeat(4_000)).is_err());
+        assert_eq!(store.thread(initial.id), Some(initial.clone()));
+        fs::rename(root.join("threads.json"), root.join("original.json")).unwrap();
+        fs::create_dir(root.join("threads.json")).unwrap();
         assert!(
             store
-                .apply(ProjectCommand::RemoveMemory {
-                    project: initial.id,
+                .apply(ThreadCommand::RemoveMemory {
+                    thread: initial.id,
                     expected_revision: initial.revision,
                     id: initial.memory[0].id,
                 })
                 .is_err()
         );
-        assert_eq!(store.project(initial.id), Some(initial));
+        assert_eq!(store.thread(initial.id), Some(initial));
         fs::remove_dir_all(root).unwrap();
     }
 }

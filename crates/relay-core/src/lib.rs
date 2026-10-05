@@ -1,18 +1,16 @@
-//! Project data belongs to Relay, independently of any UI or agent session.
+//! Thread data belongs to Relay, independently of any UI or agent session.
 //! This package intentionally has no framework or runtime dependencies.
 
 pub mod agents;
 pub mod capture;
 pub mod files;
-pub mod projects;
-pub mod routing;
+pub mod memory;
 pub mod sessions;
 pub mod settings;
+pub mod threads;
 pub mod voice;
 
-pub use projects::{
-    ContextId, ContextItem, MemoryId, MemoryItem, MemoryKind, MemorySource, Project,
-};
+pub use threads::{ContextId, ContextItem, MemoryId, MemoryItem, MemoryKind, MemorySource, Thread};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProjectId(pub u64);
+pub struct ThreadId(pub u64);

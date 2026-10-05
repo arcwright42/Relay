@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use relay_core::{ProjectId, agents::*};
+use relay_core::{ThreadId, agents::*};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -9,7 +9,7 @@ use std::{
 };
 
 #[derive(Default, Serialize, Deserialize)]
-pub struct SavedProject {
+pub struct SavedThread {
     #[serde(default = "format_version")]
     pub version: u32,
     pub local_codex: Option<PathBuf>,
@@ -67,6 +67,10 @@ pub struct SavedTool {
     id: String,
     title: String,
     status: String,
+    #[serde(default)]
+    input: String,
+    #[serde(default)]
+    output: String,
 }
 
 impl SavedMessage {
@@ -88,6 +92,8 @@ impl SavedMessage {
                     id: t.id.clone(),
                     title: t.title.clone(),
                     status: t.status.clone(),
+                    input: t.input.clone(),
+                    output: t.output.clone(),
                 })
                 .collect(),
         }
@@ -114,25 +120,27 @@ impl SavedMessage {
                     id: t.id,
                     title: t.title,
                     status: t.status,
+                    input: t.input,
+                    output: t.output,
                 })
                 .collect(),
         }
     }
 }
 
-pub fn load(root: &Path, project: ProjectId) -> Result<SavedProject> {
+pub fn load(root: &Path, thread: ThreadId) -> Result<SavedThread> {
     let path = root
-        .join("projects")
-        .join(project.0.to_string())
+        .join("threads")
+        .join(thread.0.to_string())
         .join("conversation.json");
     if !path.try_exists()? {
-        return Ok(SavedProject {
+        return Ok(SavedThread {
             version: 1,
             ..Default::default()
         });
     }
     let bytes = fs::read(&path).with_context(|| format!("Reading {}", path.display()))?;
-    let saved: SavedProject =
+    let saved: SavedThread =
         serde_json::from_slice(&bytes).with_context(|| format!("Reading {}", path.display()))?;
     if !matches!(saved.version, 1..=3) {
         bail!(
@@ -145,15 +153,15 @@ pub fn load(root: &Path, project: ProjectId) -> Result<SavedProject> {
         .context_checkpoint
         .acknowledged
         .as_ref()
-        .is_some_and(|snapshot| snapshot.project_id != project.0)
+        .is_some_and(|snapshot| snapshot.thread_id != thread.0)
     {
-        bail!("Conversation context belongs to another project. The file has been preserved.");
+        bail!("Conversation context belongs to another thread. The file has been preserved.");
     }
     Ok(saved)
 }
 
-pub fn save(root: &Path, project: ProjectId, saved: &SavedProject) -> Result<()> {
-    let directory = root.join("projects").join(project.0.to_string());
+pub fn save(root: &Path, thread: ThreadId, saved: &SavedThread) -> Result<()> {
+    let directory = root.join("threads").join(thread.0.to_string());
     write_json(&directory.join("conversation.json"), saved)
 }
 

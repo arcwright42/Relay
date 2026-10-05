@@ -1,4 +1,4 @@
-//! Personal files are ordinary local files, independent of projects and agent sessions.
+//! Personal files are ordinary local files, independent of threads and agent sessions.
 use std::{path::PathBuf, sync::Arc, time::SystemTime};
 
 pub const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;

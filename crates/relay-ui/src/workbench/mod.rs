@@ -5,11 +5,11 @@ mod files;
 pub use files::SaveFile;
 mod navigation;
 mod pages;
-mod projects;
 mod quick;
-pub use quick::{OpenAgentSettings, OpenProject, RequestAccessibility, ResizeQuick};
-mod routing;
-mod sessions;
+mod threads;
+pub use quick::{OpenAgentSettings, OpenThread, RequestAccessibility, ResizeQuick};
+mod memory;
+mod submission;
 mod voice;
 pub use voice::OpenMicrophoneSettings;
 #[cfg(test)]
@@ -28,12 +28,10 @@ use crate::{
     preview::Page,
 };
 use relay_core::{
-    Project,
+    Thread,
     agents::*,
-    projects::{ProjectCommand, ProjectService},
-    routing::RoutingService,
-    sessions::{ClientSessionsService, ClientSessionsSnapshot, EmptyClientSessions},
     settings::{Language, SettingsService, SettingsSnapshot},
+    threads::{ThreadCommand, ThreadService},
     voice::{EmptyVoiceService, VoiceService, VoiceSnapshot},
 };
 use std::{sync::Arc, time::Duration};
@@ -114,20 +112,19 @@ fn explain(
 
 pub struct Workbench {
     quick: Option<quick::QuickEntry>,
-    project_service: Arc<dyn ProjectService>,
-    project_revision: u64,
-    project_error: Option<String>,
-    project_saving: bool,
+    thread_service: Arc<dyn ThreadService>,
+    thread_revision: u64,
+    thread_error: Option<String>,
+    thread_saving: bool,
     settings_service: Arc<dyn SettingsService>,
     settings_snapshot: SettingsSnapshot,
     voice_service: Arc<dyn VoiceService>,
     voice_snapshot: VoiceSnapshot,
-    routing_service: Arc<dyn RoutingService>,
-    routing: routing::RoutingUi,
+    pending_send: Option<(relay_core::ThreadId, String)>,
     page: Page,
     files: Entity<files::FilesView>,
-    selected_project: usize,
-    projects: Vec<Project>,
+    selected_thread: usize,
+    threads: Vec<Thread>,
     drafts: Vec<Entity<TextareaState>>,
     search: Entity<InputState>,
     focus: FocusHandle,
@@ -135,14 +132,7 @@ pub struct Workbench {
     agent_states: Vec<AgentSnapshot>,
     agent_errors: Vec<Option<String>>,
     agent_revision: u64,
-    client_session_service: Arc<dyn ClientSessionsService>,
-    client_session_snapshot: ClientSessionsSnapshot,
-    client_session_revision: u64,
-    client_session_filter: Option<relay_core::ProjectId>,
-    client_session_filter_open: bool,
-    client_session_binding_open: bool,
-    client_session_error: Option<String>,
-    client_session_search: Entity<InputState>,
+    memory: Entity<memory::MemoryView>,
     picker_open: bool,
     conversation_scroll: ScrollHandle,
     _agent_updates: Task<()>,
@@ -153,19 +143,16 @@ impl Workbench {
     pub fn new(
         agent_service: Arc<dyn AgentService>,
         settings_service: Arc<dyn SettingsService>,
-        project_service: Arc<dyn ProjectService>,
-        routing_service: Arc<dyn RoutingService>,
+        thread_service: Arc<dyn ThreadService>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let settings_snapshot = settings_service.snapshot();
         let language = settings_snapshot.language;
-        let routing =
-            routing::RoutingUi::new(language, routing_service.snapshot().provider, window, cx);
-        let catalog = project_service.snapshot();
-        let projects = catalog.projects;
+        let catalog = thread_service.snapshot();
+        let threads = catalog.threads;
         let files = cx.new(|cx| files::FilesView::new(language, window, cx));
-        let drafts: Vec<_> = projects
+        let drafts: Vec<_> = threads
             .iter()
             .map(|_| {
                 cx.new(|cx| {
@@ -178,21 +165,30 @@ impl Workbench {
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder(language.text(Text::SearchPlaceholder))
         });
-        let client_session_search = cx.new(|cx| {
-            InputState::new(window, cx).placeholder(language.text(Text::ClientSessionsSearch))
-        });
+        let memory = cx.new(|cx| memory::MemoryView::new(language, window, cx));
         let mut subscriptions = vec![cx.subscribe_in(&search, window, |_, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         })];
         subscriptions.push(cx.subscribe_in(
-            &client_session_search,
+            &memory,
             window,
-            |_, _, event, _, cx| {
-                if matches!(event, InputEvent::Change) {
-                    cx.notify();
+            |this, _, _: &memory::ConnectCoordinator, window, cx| {
+                this.navigate(Page::Home, window, cx);
+                if let Some(index) = this.threads.iter().position(|t| t.id.0 == 0) {
+                    let state = &this.agent_states[index];
+                    if matches!(
+                        state.status,
+                        ConnectionStatus::Disconnected | ConnectionStatus::Failed
+                    ) && let Err(error) = this.agent_service.dispatch(
+                        this.threads[index].id,
+                        AgentCommand::Connect(state.source.clone()),
+                    ) {
+                        this.agent_errors[index] = Some(error);
+                    }
                 }
+                cx.notify();
             },
         ));
         for draft in &drafts {
@@ -207,22 +203,9 @@ impl Workbench {
                 }),
             );
         }
-        subscriptions.push(
-            cx.subscribe_in(&routing.draft, window, |this, _, event, _, cx| {
-                if matches!(event, InputEvent::Change) && !this.routing.creating {
-                    this.routing.reset_decision();
-                }
-                cx.notify();
-            }),
-        );
-        subscriptions.push(
-            cx.subscribe_in(&routing.key, window, |_, _, _: &InputEvent, _, cx| {
-                cx.notify()
-            }),
-        );
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let agent_states = projects
+        let agent_states = threads
             .iter()
             .map(|p| agent_service.snapshot(p.id))
             .collect();
@@ -233,10 +216,10 @@ impl Workbench {
                 executor.timer(Duration::from_millis(100)).await;
                 if this
                     .update_in(cx, |this, window, cx| {
-                        this.refresh_projects(window, cx);
+                        this.refresh_threads(window, cx);
                         this.refresh_agents(cx);
-                        this.refresh_client_sessions(cx);
-                        this.advance_routed_send(window, cx);
+                        this.refresh_memory_agent(cx);
+                        this.advance_pending_send(window, cx);
                         let settings = this.settings_service.snapshot();
                         if this.settings_snapshot != settings {
                             this.settings_snapshot = settings;
@@ -256,35 +239,27 @@ impl Workbench {
         });
         Self {
             quick: None,
-            project_service,
-            project_revision: catalog.revision,
-            project_error: catalog.error,
-            project_saving: false,
+            thread_service,
+            thread_revision: catalog.revision,
+            thread_error: catalog.error,
+            thread_saving: false,
             settings_service,
             settings_snapshot,
             voice_service: Arc::new(EmptyVoiceService),
             voice_snapshot: VoiceSnapshot::default(),
-            routing_service,
-            routing,
+            pending_send: None,
             page: Page::Home,
             files,
-            selected_project: 0,
-            agent_errors: vec![None; projects.len()],
-            projects,
+            selected_thread: 0,
+            agent_errors: vec![None; threads.len()],
+            threads,
             drafts,
             search,
             focus,
             agent_service,
             agent_states,
             agent_revision,
-            client_session_service: Arc::new(EmptyClientSessions),
-            client_session_snapshot: ClientSessionsSnapshot::default(),
-            client_session_revision: 0,
-            client_session_filter: None,
-            client_session_filter_open: false,
-            client_session_binding_open: false,
-            client_session_error: None,
-            client_session_search,
+            memory,
             picker_open: false,
             conversation_scroll: ScrollHandle::new(),
             _agent_updates: updates,
@@ -302,35 +277,36 @@ impl Workbench {
         crate::apply_language(language, cx);
         self.files
             .update(cx, |files, cx| files.set_language(language, window, cx));
-        // User-owned project names, notes and protocol inputs never change with UI language.
+        // User-owned thread names, notes and protocol inputs never change with UI language.
         self.search.update(cx, |search, cx| {
             search.set_placeholder(language.text(Text::SearchPlaceholder), window, cx)
         });
-        self.client_session_search.update(cx, |search, cx| {
-            search.set_placeholder(language.text(Text::ClientSessionsSearch), window, cx)
-        });
+        self.memory
+            .update(cx, |memory, cx| memory.set_language(language, window, cx));
         for draft in &self.drafts {
             draft.update(cx, |draft, cx| {
                 draft.set_placeholder(language.text(Text::AskRelay), window, cx)
             });
         }
-        self.routing.draft.update(cx, |draft, cx| {
-            draft.set_placeholder(language.text(Text::AskRelay), window, cx)
-        });
         cx.notify();
     }
 
     fn navigate(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         self.picker_open = false;
-        self.routing.pending_send = None;
-        if self.page == Page::Home && page != Page::Home {
-            // Returning Home must not reactivate a decision from before navigation.
-            self.routing.navigation_revision += 1;
+        self.pending_send = None;
+        if let Page::Thread(index) = page {
+            self.selected_thread = index;
         }
-        if let Page::Project(index) = page {
-            self.selected_project = index;
+        if page == Page::Home {
+            self.selected_thread = self.threads.iter().position(|t| t.id.0 == 0).unwrap_or(0);
         }
         self.page = page;
+        if page == Page::Memory {
+            self.refresh_memory_agent(cx);
+        }
+        self.memory.update(cx, |memory, cx| {
+            memory.set_visible(page == Page::Memory, window, cx)
+        });
         self.files.update(cx, |files, cx| {
             files.set_visible(page == Page::Files, window, cx)
         });
@@ -356,12 +332,8 @@ impl Workbench {
             self.quick_send(relay_core::capture::QuickAction::Ask, window, cx);
             return;
         }
-        if self.page == Page::Home {
-            self.route_prompt(window, cx);
-            return;
-        }
-        if !matches!(self.page, Page::Project(_))
-            || self.drafts[self.selected_project]
+        if !matches!(self.page, Page::Thread(_) | Page::Home)
+            || self.drafts[self.selected_thread]
                 .read(cx)
                 .value()
                 .trim()
@@ -369,17 +341,28 @@ impl Workbench {
         {
             return;
         }
-        let text = self.drafts[self.selected_project]
+        let text = self.drafts[self.selected_thread]
             .read(cx)
             .value()
             .to_string();
-        if self.agent_states[self.selected_project].status != ConnectionStatus::Ready {
-            self.picker_open = true;
+        if self.agent_states[self.selected_thread].status != ConnectionStatus::Ready {
+            if matches!(
+                self.agent_states[self.selected_thread].status,
+                ConnectionStatus::Disconnected | ConnectionStatus::Failed
+            ) {
+                self.pending_send = Some((self.threads[self.selected_thread].id, text));
+                self.agent_action(
+                    AgentCommand::Connect(self.agent_states[self.selected_thread].source.clone()),
+                    cx,
+                );
+            } else {
+                self.picker_open = true;
+            }
             cx.notify();
             return;
         }
         if self.agent_action(AgentCommand::Send(text), cx) {
-            self.drafts[self.selected_project].update(cx, |draft, cx| {
+            self.drafts[self.selected_thread].update(cx, |draft, cx| {
                 draft.set_value("", window, cx);
             });
             self.conversation_scroll.scroll_to_bottom();
@@ -387,7 +370,7 @@ impl Workbench {
     }
 
     fn use_prompt(&mut self, prompt: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        self.drafts[self.selected_project].update(cx, |draft, cx| {
+        self.drafts[self.selected_thread].update(cx, |draft, cx| {
             // Quick actions are editable drafts, and the previous text remains undoable.
             draft.replace_all(prompt, window, cx);
             draft.focus(window, cx);
@@ -396,7 +379,7 @@ impl Workbench {
     }
 }
 
-fn project_icon(index: usize) -> IconName {
+fn thread_icon(index: usize) -> IconName {
     match index {
         1 => IconName::Cpu,
         2 => IconName::BriefcaseBusiness,
@@ -411,37 +394,20 @@ impl Render for Workbench {
             self.quick_view(cx)
         } else {
             match self.page {
-                Page::Project(_) => {
-                    if self.agent_states[self.selected_project].messages.is_empty() {
+                Page::Thread(_) => {
+                    if self.agent_states[self.selected_thread].messages.is_empty() {
                         self.welcome(compact, cx)
                     } else {
                         self.conversation(compact, cx)
                     }
                 }
                 Page::Home => self.home(cx),
-                Page::Agents if !self.projects.is_empty() => self.agents(cx),
+                Page::Agents if !self.threads.is_empty() => self.agents(cx),
                 Page::Agents => self.home(cx),
                 Page::Settings => self.settings(cx),
-                Page::Sessions => self.client_sessions(cx),
+                Page::Memory => column().flex_1().min_h_0().child(self.memory.clone()),
                 Page::Files => column().flex_1().min_h_0().child(self.files.clone()),
-                Page::Inbox => column()
-                    .flex_1()
-                    .items_center()
-                    .justify_center()
-                    .pb(px(80.))
-                    .gap(px(15.))
-                    .child(
-                        icon(IconName::Inbox)
-                            .size(px(35.))
-                            .text_color(rgb(0x9999a0)),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(26.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(self.text(Text::InboxEmpty)),
-                    )
-                    .child(muted(self.text(Text::InboxEmptyDetail)).text_size(px(14.))),
+                Page::Inbox => self.activity(cx),
             }
         };
         row()

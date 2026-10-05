@@ -1,4 +1,4 @@
-//! One personal file space with conflict-checked writes. No project partitioning.
+//! One personal file space with conflict-checked writes. No thread partitioning.
 use relay_core::files::*;
 use sha2::{Digest, Sha256};
 use std::{
@@ -397,9 +397,9 @@ fn migrate_legacy_files(root: &Path, workspace: &Path) -> std::io::Result<()> {
     if marker.is_file() {
         return Ok(());
     }
-    let projects = root.join("projects");
-    if projects.is_dir() {
-        let mut entries = fs::read_dir(projects)?.collect::<Result<Vec<_>, _>>()?;
+    let threads = root.join("projects");
+    if threads.is_dir() {
+        let mut entries = fs::read_dir(threads)?.collect::<Result<Vec<_>, _>>()?;
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             if !entry.file_type()?.is_dir() {

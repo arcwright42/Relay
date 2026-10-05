@@ -43,10 +43,10 @@ fn text(document: &FileDocument) -> &str {
 }
 
 #[test]
-fn personal_files_survive_restart_without_any_project_or_agent_session() {
+fn personal_files_survive_restart_without_any_thread_or_agent_session() {
     let fixture = Fixture::new();
     let doc = fixture.create("notes.md", "# 私人文件\r\n保留换行\r\n");
-    assert!(!fixture.root.join("projects.json").exists());
+    assert!(!fixture.root.join("threads.json").exists());
     assert_eq!(fixture.files.list(PathBuf::new()).unwrap().entries.len(), 1);
     fixture
         .files
@@ -287,31 +287,31 @@ fn binary_or_large_files_are_not_silently_decoded_and_saved_as_text() {
 fn all_conversations_share_the_personal_space_and_custom_workfolders_do_not_change_it() {
     use relay_core::{
         agents::{AgentCommand, AgentService},
-        projects::{ProjectCommand, ProjectDraft, ProjectService},
+        threads::{ThreadCommand, ThreadDraft, ThreadService},
     };
     use std::sync::Arc;
     let fixture = Fixture::new();
     let doc = fixture.create("shared.md", "Shared deliverable");
-    let projects = Arc::new(crate::ProjectStore::new(fixture.root.clone()));
-    let first = projects
-        .apply(ProjectCommand::Create(ProjectDraft {
+    let threads = Arc::new(crate::ThreadStore::new(fixture.root.clone()));
+    let first = threads
+        .apply(ThreadCommand::Create(ThreadDraft {
             name: "First conversation".into(),
             ..Default::default()
         }))
         .unwrap();
-    let second = projects
-        .apply(ProjectCommand::Create(ProjectDraft {
+    let second = threads
+        .apply(ThreadCommand::Create(ThreadDraft {
             name: "Second conversation".into(),
             ..Default::default()
         }))
         .unwrap();
-    let ids: Vec<_> = projects
+    let ids: Vec<_> = threads
         .snapshot()
-        .projects
+        .threads
         .iter()
-        .map(|project| project.id)
+        .map(|thread| thread.id)
         .collect();
-    let agents = crate::AgentRuntime::new(fixture.root.clone(), projects);
+    let agents = crate::AgentRuntime::new(fixture.root.clone(), threads);
     for id in ids {
         assert_eq!(
             agents.snapshot(id).working_directory,
@@ -349,24 +349,24 @@ fn all_conversations_share_the_personal_space_and_custom_workfolders_do_not_chan
 fn saved_legacy_default_folders_upgrade_while_user_selected_folders_are_preserved() {
     use relay_core::{
         agents::{AgentCommand, AgentService},
-        projects::{ProjectCommand, ProjectDraft, ProjectService},
+        threads::{ThreadCommand, ThreadDraft, ThreadService},
     };
     use std::sync::Arc;
     let fixture = Fixture::new();
-    let projects = Arc::new(crate::ProjectStore::new(fixture.root.clone()));
-    let first = projects.snapshot().projects[0].id;
+    let threads = Arc::new(crate::ThreadStore::new(fixture.root.clone()));
+    let first = threads.snapshot().threads[0].id;
     let legacy = fixture.root.join(format!("projects/{}/workspace", first.0));
     let custom = fixture.root.join("custom-repository");
     fs::create_dir_all(&legacy).unwrap();
     fs::create_dir(&custom).unwrap();
     fs::write(legacy.join("old.md"), "An existing deliverable").unwrap();
-    let second = projects
-        .apply(ProjectCommand::Create(ProjectDraft {
+    let second = threads
+        .apply(ThreadCommand::Create(ThreadDraft {
             name: "Custom workfolder".into(),
             ..Default::default()
         }))
         .unwrap();
-    let agents = crate::AgentRuntime::new(fixture.root.clone(), projects.clone());
+    let agents = crate::AgentRuntime::new(fixture.root.clone(), threads.clone());
     agents
         .dispatch(first, AgentCommand::SetWorkingDirectory(legacy.clone()))
         .unwrap();
@@ -375,7 +375,7 @@ fn saved_legacy_default_folders_upgrade_while_user_selected_folders_are_preserve
         .unwrap();
     agents.shutdown();
     let listing = fixture.files.list(PathBuf::new()).unwrap();
-    let restarted = crate::AgentRuntime::new(fixture.root.clone(), projects);
+    let restarted = crate::AgentRuntime::new(fixture.root.clone(), threads);
     assert_eq!(
         restarted.snapshot(first).working_directory,
         listing.workspace
@@ -393,7 +393,7 @@ fn saved_legacy_default_folders_upgrade_while_user_selected_folders_are_preserve
 }
 
 #[test]
-fn legacy_files_merge_without_project_folders_overwrites_or_duplicate_reimports() {
+fn legacy_files_merge_without_thread_folders_overwrites_or_duplicate_reimports() {
     let fixture = Fixture::new();
     let first = fixture.root.join("projects/1/workspace/reports");
     let second = fixture.root.join("projects/2/workspace/reports");
